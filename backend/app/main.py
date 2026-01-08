@@ -1,14 +1,24 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from app.core.config import settings
+from app.core.db import init_db
 from app.api import routes_models, routes_presets, routes_debates, routes_stream
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Create tables
+    await init_db()
+    yield
+    # Shutdown: Clean up if needed
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="API for AI-driven debates using OpenRouter",
     version="0.1.0",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    lifespan=lifespan
 )
 
 # CORS Configuration
