@@ -114,6 +114,7 @@ const DebateLive = () => {
     // Attempt to find by matching implicit moderator name "Moderator" or checking role if possible
     // Since turn doesn't have role, we use the known convention
     if (speakerName === "Moderator") return true; 
+    if (speakerName.includes("Verdict")) return true; // Catch "⚖️ Moderator (Verdict)"
     
     // Or look up in participants list
     if (!debate) return false;

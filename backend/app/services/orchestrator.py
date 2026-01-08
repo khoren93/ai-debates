@@ -84,7 +84,8 @@ def process_turn_job(debate_id: str, seq_index: int):
         max_turns_total = num_rounds * turns_per_round
         
         if seq_index >= max_turns_total:
-            q.enqueue("app.services.orchestrator.finish_debate_job", debate_id=debate_id)
+             # Add Verdict Job here before finishing
+            q.enqueue("app.services.orchestrator.conduct_verdict_job", debate_id=debate_id, seq_index=seq_index)
             return
 
         # Simple Round Robin: Mod -> D1 -> D2 -> Mod...
@@ -207,6 +208,118 @@ def process_turn_job(debate_id: str, seq_index: int):
     finally:
         db.close()
 
+
+def conduct_verdict_job(debate_id: str, seq_index: int):
+    """
+    Job 2.5: Generate Final Verdict (Judge/Moderator)
+    """
+    db = SessionLocal()
+    try:
+        debate = db.query(Debate).filter(Debate.id == uuid.UUID(debate_id)).first()
+        if not debate: return
+
+        conf = debate.config_json
+        # Use moderator as judge
+        moderator = next((p for p in conf.get('participants', []) if p['role'] == 'moderator'), None)
+        if not moderator:
+            # Fallback if no moderator found
+            moderator = {
+                "role": "moderator",
+                "display_name": "AI Judge",
+                "model_id": "google/gemini-2.0-flash-exp:free" 
+            }
+        
+        publish_event(debate_id, "turn_started", {
+            "seq_index": seq_index,
+            "speaker_name": "⚖️ Moderator (Verdict)"
+        })
+
+        # Build Prompt for Verdict
+        language = conf.get('language', 'English')
+        
+        system_prompt = f"""You are an expert Debate Judge. 
+        Your task is to analyze the debate history provided by the user.
+        
+        Strictly follow this structure in your response (use Markdown):
+        1. **Winner**: Declare the winner (or a draw) based on argument strength, logic, and persuasion.
+        2. **Analysis**: Briefly analyze the performance of each participant.
+        3. **Key Arguments**: Highlight the strongest points made.
+        4. **Logical Fallacies**: Point out any logical errors or weak arguments.
+        
+        Output Language: {language}
+        Style: Objective, Professional, and Analytical.
+        FORMATTING: You MUST use bolding, lists, and headers.
+        """
+
+        # Build Context (History)
+        prev_turns = db.query(Turn).filter(Turn.debate_id == uuid.UUID(debate_id)).order_by(Turn.seq_index).all()
+        history_str = ""
+        for t in prev_turns:
+            history_str += f"{t.speaker_name}: {t.text}\n\n"
+            
+        user_content = f"The debate topic was: {conf.get('topic')}. \n"
+        if conf.get('description'):
+            user_content += f"Context: {conf.get('description')}\n"
+        
+        user_content += f"\nFull Debate Transcript:\n{history_str}\n"
+        user_content += f"Please provide your final verdict now."
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+        
+        client = OpenRouterClient()
+        full_text = ""
+        
+        async def run_generation():
+            text_accumulator = ""
+            try:
+                model_id = moderator.get('model_id') or "google/gemini-2.0-flash-exp:free"
+                async for chunk in client.create_chat_completion(model_id, messages):
+                    text_accumulator += chunk
+                    publish_event(debate_id, "turn_delta", {
+                        "seq_index": seq_index,
+                        "delta": chunk,
+                        "speaker_name": "⚖️ Moderator (Verdict)"
+                    })
+            except Exception as ex:
+                print(f"Verdict Generation Error: {ex}")
+                text_accumulator += f" [Error: {ex}]"
+            return text_accumulator
+
+        full_text = asyncio.run(run_generation())
+
+        # Save Verdict Turn
+        new_turn = Turn(
+            debate_id=uuid.UUID(debate_id),
+            seq_index=seq_index,
+            round_id="verdict",
+            turn_type="verdict",
+            speaker_id=moderator.get('model_id'),
+            speaker_name="⚖️ Moderator (Verdict)",
+            text=full_text,
+            word_count=len(full_text.split()),
+            model_used=moderator.get('model_id', 'unknown')
+        )
+        db.add(new_turn)
+        db.commit()
+
+        publish_event(debate_id, "turn_completed", {
+            "seq_index": seq_index,
+            "text": full_text,
+            "speaker_name": "⚖️ Moderator (Verdict)"
+        })
+
+        # Finally, finish debate
+        q.enqueue("app.services.orchestrator.finish_debate_job", debate_id=debate_id)
+
+    except Exception as e:
+        print(f"Verdict Job Error: {e}")
+        # Ensure we still close the debate if judge fails
+        q.enqueue("app.services.orchestrator.finish_debate_job", debate_id=debate_id)
+    finally:
+        db.close()
 
 def finish_debate_job(debate_id: str):
     """
