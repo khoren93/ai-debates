@@ -32,6 +32,8 @@ class ParticipantConfig(BaseModel):
     role: str # moderator | debater
     model_id: str
     display_name: str
+    avatar_url: Optional[str] = None
+    voice_name: Optional[str] = None
     persona_preset: Optional[str] = None
     persona_custom: Optional[str] = None
 

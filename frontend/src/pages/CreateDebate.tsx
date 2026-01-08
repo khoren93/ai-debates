@@ -1,13 +1,18 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
-import { ArrowLeft, Plus, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Plus, ChevronDown, Volume2, PlayCircle } from 'lucide-react';
 
 interface Model {
   id: string;
   name: string;
   pricing: { prompt: string; completion: string; image: string; request: string };
   context_length: number;
+}
+
+interface Voice {
+    name: string;
+    lang: string;
 }
 
 const TOPIC_TEMPLATES = [
@@ -194,7 +199,20 @@ const CreateDebate = () => {
   const styleRef = useRef<HTMLDivElement>(null);
 
   const [models, setModels] = useState<Model[]>([]);
-  
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  useEffect(() => {
+    const loadVoices = () => {
+        const available = window.speechSynthesis.getVoices();
+        // Sort by name or lang
+        available.sort((a, b) => a.name.localeCompare(b.name));
+        setVoices(available);
+    };
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    return () => { window.speechSynthesis.onvoiceschanged = null; };
+  }, []);
+
   const [settings, setSettings] = useState({
     topic: '',
     description: '',
@@ -202,13 +220,15 @@ const CreateDebate = () => {
     num_rounds: 3, 
     length_preset: 'short', // short, medium, long
     moderator_model: '',
+    moderator_voice: '', // Added voice
     num_participants: 2, // 2-5
   });
 
   const [participants, setParticipants] = useState([
-      { name: 'Debater 1', model: '', prompt: 'You are a skilled debater. Argue in favor of the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 1 },
-      { name: 'Debater 2', model: '', prompt: 'You are a skilled debater. Argue against the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 2 }
+      { name: 'Debater 1', model: '', voice: '', prompt: 'You are a skilled debater. Argue in favor of the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 1 },
+      { name: 'Debater 2', model: '', voice: '', prompt: 'You are a skilled debater. Argue against the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 2 }
   ]);
+
 
   // Click outside to close templates and style dropdowns
   useEffect(() => {
@@ -247,6 +267,27 @@ const CreateDebate = () => {
     fetchModels();
   }, []);
 
+  // Set default voices when they load
+  useEffect(() => {
+      if (voices.length > 0) {
+          setSettings(prev => {
+             if (prev.moderator_voice) return prev;
+             const defaultMod = voices.find(v => v.name.includes('Google US English')) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+             return { ...prev, moderator_voice: defaultMod.name };
+          });
+
+          setParticipants(prev => prev.map((p, idx) => {
+              if (p.voice) return p;
+              const enVoices = voices.filter(v => v.lang.startsWith('en'));
+              // Skip the voice used by moderator if possible to avoid confusion, or not.
+              // Just pick round robin
+              const choice = enVoices.length > 0 ? enVoices[(idx + 1) % enVoices.length] : voices[0];
+              return { ...p, voice: choice.name };
+          }));
+      }
+  }, [voices]);
+
+
   // Update participant count
   useEffect(() => {
      setParticipants(prev => {
@@ -257,10 +298,20 @@ const CreateDebate = () => {
              // Add participants
              const added = [];
              const defaultModelId = models.length > 0 ? (models.find(m => m.name.toLowerCase().includes('(free)')) || models[0]).id : '';
+             
              for (let i = prev.length + 1; i <= newCount; i++) {
+                 // Try to assign a voice
+                 let voiceName = '';
+                 if (voices.length > 0) {
+                     const enVoices = voices.filter(v => v.lang.startsWith('en'));
+                     const choice = enVoices.length > 0 ? enVoices[i % enVoices.length] : voices[0];
+                     voiceName = choice.name;
+                 }
+
                  added.push({
                      name: `Debater ${i}`,
                      model: defaultModelId,
+                     voice: voiceName,
                      prompt: `You are a skilled debater. Provide a unique perspective on the topic (Position ${i}).\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.`,
                      position: i
                  });
@@ -271,7 +322,7 @@ const CreateDebate = () => {
              return prev.slice(0, newCount);
          }
      });
-  }, [settings.num_participants, models]);
+  }, [settings.num_participants, models, voices]);
 
   const updateParticipant = (index: number, field: string, value: string) => {
       const newP = [...participants];
@@ -292,9 +343,16 @@ const CreateDebate = () => {
           newPrompt = `${newPrompt}\n\nStyle: ${styleDesc}`;
       }
       
-      updateParticipant(index, 'prompt', newPrompt);
       setOpenStyleIdx(null);
   }
+
+  const previewVoice = (voiceName: string, text: string) => {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      const voice = voices.find(v => v.name === voiceName);
+      if (voice) utter.voice = voice;
+      window.speechSynthesis.speak(utter);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -316,14 +374,16 @@ const CreateDebate = () => {
                 role: "moderator",
                 model_id: defaultModModel,
                 display_name: "Moderator",
-                persona_custom: "You are an impartial debate moderator. Briefly introduce the next speaker and summarize the current state of the debate."
+                persona_custom: "You are an impartial debate moderator. Briefly introduce the next speaker and summarize the current state of the debate.",
+                voice_name: settings.moderator_voice
             },
             // Dynamic Debaters
             ...participants.map(p => ({
                 role: "debater",
                 model_id: p.model,
                 display_name: p.name,
-                persona_custom: p.prompt
+                persona_custom: p.prompt,
+                voice_name: p.voice
             }))
         ]
       };
@@ -460,17 +520,42 @@ const CreateDebate = () => {
               </select>
             </div>
 
-            <div className="pt-2 border-t border-gray-100 mt-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Moderator Model</label>
-                <select
-                  className="w-full p-2 border border-gray-300 rounded"
-                  value={settings.moderator_model}
-                  onChange={e => setSettings({...settings, moderator_model: e.target.value})}
-                >
-                  {models.map(m => (
-                    <option key={m.id} value={m.id}>{m.name}</option>
-                  ))}
-                </select>
+            <div className="pt-2 border-t border-gray-100 mt-2 grid md:grid-cols-2 gap-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Moderator Model</label>
+                    <select
+                      className="w-full p-2 border border-gray-300 rounded"
+                      value={settings.moderator_model}
+                      onChange={e => setSettings({...settings, moderator_model: e.target.value})}
+                    >
+                      {models.map(m => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                </div>
+                <div>
+                     <label className="block text-sm font-medium text-gray-700 mb-1">Moderator Voice</label>
+                     <div className="flex space-x-2">
+                        <select
+                          className="w-full p-2 border border-gray-300 rounded text-sm"
+                          value={settings.moderator_voice}
+                          onChange={e => setSettings({...settings, moderator_voice: e.target.value})}
+                        >
+                           <option value="">Default Browser Voice</option>
+                           {voices.map((v, i) => (
+                               <option key={i} value={v.name}>{v.name.length > 30 ? v.name.slice(0,30)+'...' : v.name}</option>
+                           ))}
+                        </select>
+                        <button
+                            type="button"
+                            onClick={() => previewVoice(settings.moderator_voice, "Welcome to the debate.")}
+                            className="p-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded border border-blue-200"
+                            title="Preview Voice"
+                        >
+                            <Volume2 className="w-4 h-4"/>
+                        </button>
+                    </div>
+                </div>
             </div>
 
           </div>
@@ -493,17 +578,41 @@ const CreateDebate = () => {
                       onChange={e => updateParticipant(idx, 'name', e.target.value)}
                     />
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Model</label>
-                    <select
-                      className="w-full p-2 border border-gray-300 rounded"
-                      value={p.model}
-                      onChange={e => updateParticipant(idx, 'model', e.target.value)}
-                    >
-                      {models.map(m => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </select>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">Model</label>
+                        <select
+                          className="w-full p-2 border border-gray-300 rounded text-sm"
+                          value={p.model}
+                          onChange={e => updateParticipant(idx, 'model', e.target.value)}
+                        >
+                          {models.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700">Voice</label>
+                         <div className="flex space-x-2">
+                            <select
+                              className="w-full p-2 border border-gray-300 rounded text-sm"
+                              value={p.voice}
+                              onChange={e => updateParticipant(idx, 'voice', e.target.value)}
+                            >
+                               {voices.map((v, i) => (
+                                   <option key={i} value={v.name}>{v.name.length > 25 ? v.name.slice(0,25)+'...' : v.name}</option>
+                               ))}
+                            </select>
+                            <button
+                                type="button"
+                                onClick={() => previewVoice(p.voice, `Hello, I am ${p.name}`)}
+                                className="p-2 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded border border-gray-200 shrink-0"
+                                title="Preview Voice"
+                            >
+                                <Volume2 className="w-4 h-4"/>
+                            </button>
+                        </div>
+                      </div>
                   </div>
                   <div>
                     <div className="flex justify-between items-center mb-1">

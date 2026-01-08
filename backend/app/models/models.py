@@ -52,6 +52,7 @@ class DebateParticipant(Base):
     role: Mapped[str] = mapped_column(String)  # moderator, debater
     model_id: Mapped[str] = mapped_column(String) # openrouter model id
     persona_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    voice_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     
     debate: Mapped["Debate"] = relationship("Debate", back_populates="participants")
 

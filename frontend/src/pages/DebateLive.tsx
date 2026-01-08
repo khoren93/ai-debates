@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '../api/axios';
-import { ArrowLeft, User, Bot, Clock, Download } from 'lucide-react';
+import { ArrowLeft, User, Bot, Clock, Download, Volume2, Square, Play } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -16,6 +16,7 @@ interface Participant {
   name: string;
   role: string;
   model: string;
+  voice_name?: string;
 }
 
 interface Debate {
@@ -33,6 +34,26 @@ const DebateLive = () => {
   const [streamingTurn, setStreamingTurn] = useState<{ speaker: string, text: string } | null>(null);
   const [status, setStatus] = useState<string>('loading');
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // TTS State
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const speakingRef = useRef<boolean>(false); // Ref to track status inside loops
+  
+  // Load voices
+  useEffect(() => {
+    const loadVoices = () => {
+        const vs = window.speechSynthesis.getVoices();
+        setVoices(vs);
+    };
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    loadVoices();
+    
+    // Cleanup on unmount
+    return () => {
+        window.speechSynthesis.cancel();
+    };
+  }, []);
 
   // Fetch initial state
   useEffect(() => {
@@ -122,6 +143,79 @@ const DebateLive = () => {
     return p ? p.role === 'moderator' : false;
   };
 
+  const getVoiceForSpeaker = (speakerName: string) => {
+      // Deterministic assignment based on name char code sum
+      if (voices.length === 0) return null;
+      if (!debate) return null;
+      
+      // Try to find explicit voice choice
+      const p = debate.participants.find(p => p.name === speakerName);
+      if (p && p.voice_name) {
+          const selected = voices.find(v => v.name === p.voice_name);
+          if (selected) return selected;
+      }
+      
+      const isMod = isModerator(speakerName) || speakerName.includes("Verdict");
+      if (isMod) {
+          // Find a "Google US English" or similar standard voice for moderator
+          return voices.find(v => v.name.includes("Google US English")) || voices[0];
+      }
+      
+      // For debaters, pick from available voices excluding the moderator one
+      // Simple hash
+      const charCodeSum = speakerName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+      const debaterVoices = voices.filter(v => !v.name.includes("Google US English") && v.lang.startsWith("en"));
+      if (debaterVoices.length === 0) return voices[0];
+      
+      return debaterVoices[charCodeSum % debaterVoices.length];
+  }
+
+  const handleCreateSpeech = (text: string, speakerName: string) => {
+      return new Promise<void>((resolve) => {
+          // Remove markdown symbols for cleaner reading
+          const cleanText = text.replace(/[*#_`]/g, ''); 
+          
+          const utter = new SpeechSynthesisUtterance(cleanText);
+          const voice = getVoiceForSpeaker(speakerName);
+          if (voice) utter.voice = voice;
+          
+          utter.rate = 1.1; // Slightly faster
+          utter.onend = () => resolve();
+          utter.onerror = () => resolve(); // Keep going on error
+          
+          window.speechSynthesis.speak(utter);
+      });
+  };
+
+  const startPlayback = async (startIndex: number = 0) => {
+      if (!debate) return;
+      setIsSpeaking(true);
+      speakingRef.current = true;
+      
+      // Cancel any current speech
+      window.speechSynthesis.cancel();
+      
+      // Read turns sequentially from startIndex
+      const turnsToRead = debate.turns.slice(startIndex);
+
+      for (const turn of turnsToRead) {
+          if (!speakingRef.current) break;
+          // Highlight logic could go here
+          await handleCreateSpeech(`${turn.speaker_name} says: ${turn.text}`, turn.speaker_name);
+          // Small pause between turns
+          await new Promise(r => setTimeout(r, 500));
+      }
+      
+      setIsSpeaking(false);
+      speakingRef.current = false;
+  };
+
+  const stopPlayback = () => {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      speakingRef.current = false;
+  };
+
   const handleDownload = () => {
     if (!debate) return;
     
@@ -169,13 +263,23 @@ const DebateLive = () => {
                <span className="flex items-center"><Clock className="w-4 h-4 mr-1"/> {new Date(debate.created_at).toLocaleDateString()}</span>
             </div>
         </div>
-        <button 
-           onClick={handleDownload}
-           className="flex items-center px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition text-sm font-medium shadow-sm"
-        >
-           <Download className="w-4 h-4 mr-2" />
-           Export MD
-        </button>
+        <div className="flex">
+            <button 
+               onClick={isSpeaking ? stopPlayback : () => startPlayback(0)}
+               disabled={!debate || debate.turns.length === 0}
+               className={`flex items-center px-4 py-2 border rounded-lg transition text-sm font-medium shadow-sm mr-2 ${isSpeaking ? 'bg-red-50 border-red-200 text-red-700 hover:bg-red-100' : 'bg-white border-gray-300 hover:bg-gray-50 disabled:opacity-50'}`}
+            >
+               {isSpeaking ? <Square className="w-4 h-4 mr-2 fill-current" /> : <Volume2 className="w-4 h-4 mr-2" />}
+               {isSpeaking ? 'Stop Reading' : 'Read Aloud'}
+            </button>
+            <button 
+               onClick={handleDownload}
+               className="flex items-center px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition text-sm font-medium shadow-sm"
+            >
+               <Download className="w-4 h-4 mr-2" />
+               Export MD
+            </button>
+        </div>
       </div>
 
       <div className="flex w-full gap-4 mb-8 bg-gray-50 p-4 rounded-lg overflow-x-auto items-center">
@@ -207,12 +311,21 @@ const DebateLive = () => {
       </div>
 
       <div className="space-y-6">
-        {debate.turns.map((turn) => {
+        {debate.turns.map((turn, index) => {
             const isMod = isModerator(turn.speaker_name);
             return (
             <div key={turn.seq_index} className={`flex flex-col ${isMod ? 'items-start' : 'items-end'}`}>
                 <div className={`max-w-[80%] rounded-2xl p-4 ${isMod ? 'bg-gray-100 border border-gray-200' : 'bg-blue-50 border border-blue-100 hover:shadow-md'} transition-shadow`}>
-                    <p className="text-xs font-semibold text-gray-500 mb-1">{turn.speaker_name}</p>
+                    <div className="flex justify-between items-center mb-1">
+                        <p className="text-xs font-semibold text-gray-500 mr-4">{turn.speaker_name}</p>
+                        <button 
+                            onClick={() => startPlayback(index)}
+                            className="p-1 text-gray-400 hover:text-blue-600 hover:bg-gray-200/50 rounded-full transition-colors"
+                            title="Play from here"
+                        >
+                            <Play className="w-3 h-3 fill-current" />
+                        </button>
+                    </div>
                     <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:my-2">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown>
                     </div>
