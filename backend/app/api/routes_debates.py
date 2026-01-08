@@ -88,6 +88,22 @@ async def create_debate(
         "message": "Debate created and queued successfully"
     }
 
+@router.delete("/{debate_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_debate(debate_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a debate and its history."""
+    try:
+        uuid_id = uuid.UUID(debate_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID")
+
+    debate = await db.get(Debate, uuid_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found")
+    
+    await db.delete(debate)
+    await db.commit()
+    return None
+
 @router.get("/{debate_id}")
 async def get_debate(debate_id: str, db: AsyncSession = Depends(get_db)):
     """

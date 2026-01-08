@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '../api/axios';
-import { ArrowLeft, User, Bot, Clock } from 'lucide-react';
+import { ArrowLeft, User, Bot, Clock, Download } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -107,11 +107,6 @@ const DebateLive = () => {
     };
   }, [id]);
 
-  // Auto-scroll only when a full turn is completed (not on every streaming chunk)
-  useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [debate?.turns.length]);
-
   if (status === 'loading') return <div className="p-10 text-center">Loading debate...</div>;
   if (!debate) return <div className="p-10 text-center">Debate not found</div>;
 
@@ -126,20 +121,60 @@ const DebateLive = () => {
     return p ? p.role === 'moderator' : false;
   };
 
+  const handleDownload = () => {
+    if (!debate) return;
+    
+    // Sort turns
+    const sortedTurns = [...debate.turns].sort((a, b) => a.seq_index - b.seq_index);
+
+    let content = `# ${debate.title}\n`;
+    content += `Date: ${new Date(debate.created_at).toLocaleString()}\n`;
+    content += `Status: ${debate.status}\n\n`;
+    content += `## Participants\n`;
+    debate.participants.forEach(p => {
+        content += `- ${p.role}: ${p.name} (${p.model})\n`;
+    });
+    content += `\n---\n\n`;
+
+    sortedTurns.forEach(turn => {
+        content += `### ${turn.speaker_name}\n\n`;
+        content += `${turn.text}\n\n`;
+    });
+
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `debate-${debate.id}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-8">
        <Link to="/" className="flex items-center text-gray-600 mb-6 hover:text-gray-900">
         <ArrowLeft className="w-4 h-4 mr-2" /> Back to Home
       </Link>
 
-      <div className="mb-8 border-b pb-4">
-        <h1 className="text-3xl font-bold mb-2">{debate.title}</h1>
-        <div className="flex items-center space-x-4 text-sm text-gray-500">
-           <span className={`px-2 py-1 rounded capitalize ${debate.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>
-             {debate.status}
-           </span>
-           <span className="flex items-center"><Clock className="w-4 h-4 mr-1"/> {new Date(debate.created_at).toLocaleDateString()}</span>
+      <div className="mb-8 border-b pb-4 flex justify-between items-start">
+        <div>
+            <h1 className="text-3xl font-bold mb-2">{debate.title}</h1>
+            <div className="flex items-center space-x-4 text-sm text-gray-500">
+               <span className={`px-2 py-1 rounded capitalize ${debate.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>
+                 {debate.status}
+               </span>
+               <span className="flex items-center"><Clock className="w-4 h-4 mr-1"/> {new Date(debate.created_at).toLocaleDateString()}</span>
+            </div>
         </div>
+        <button 
+           onClick={handleDownload}
+           className="flex items-center px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition text-sm font-medium shadow-sm"
+        >
+           <Download className="w-4 h-4 mr-2" />
+           Export MD
+        </button>
       </div>
 
       <div className="flex w-full gap-4 mb-8 bg-gray-50 p-4 rounded-lg overflow-x-auto items-center">

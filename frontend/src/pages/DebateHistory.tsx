@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/axios';
-import { Plus, MessageSquare } from 'lucide-react';
+import { Plus, MessageSquare, Trash2 } from 'lucide-react';
 
 interface DebateSummary {
   id: string;
@@ -27,6 +27,19 @@ const DebateHistory = () => {
     };
     fetchDebates();
   }, []);
+
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    if (!window.confirm("Are you sure you want to delete this debate?")) return;
+
+    try {
+      await api.delete(`/debates/${id}`);
+      setDebates(prev => prev.filter(d => d.id !== id));
+    } catch (err) {
+      console.error("Failed to delete debate", err);
+      alert("Failed to delete debate");
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -76,8 +89,17 @@ const DebateHistory = () => {
                               <p className="text-sm text-gray-500">{new Date(debate.created_at).toLocaleDateString()} • {debate.status}</p>
                           </div>
                       </div>
-                      <div className="text-gray-400 group-hover:text-gray-600">
-                          →
+                      <div className="flex items-center space-x-4">
+                        <button
+                          onClick={(e) => handleDelete(e, debate.id)}
+                          className="text-gray-400 hover:text-red-500 transition p-2 rounded-full hover:bg-red-50"
+                          title="Delete Debate"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                        <div className="text-gray-400 group-hover:text-gray-600">
+                            →
+                        </div>
                       </div>
                    </div>
                  </Link>
