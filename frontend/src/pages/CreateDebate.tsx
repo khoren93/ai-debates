@@ -287,17 +287,22 @@ const CreateDebate = () => {
 
           setSettings(prev => {
              // If current voice matches language, keep it. Otherwise switch.
+             if (prev.moderator_voice === "") return prev;
              const currentVoice = voices.find(v => v.name === prev.moderator_voice);
              if (currentVoice && currentVoice.lang.startsWith(langCode)) return prev;
 
-             const defaultMod = fallbackVoices.find(v => v.name.includes('Google US English') && langCode === 'en') || fallbackVoices[0];
-             return { ...prev, moderator_voice: defaultMod.name };
+             // Don't force a specific voice, let it stay default (empty string)
+             return { ...prev, moderator_voice: "" };
           });
 
           setParticipants(prev => prev.map((p, idx) => {
               const currentVoice = voices.find(v => v.name === p.voice);
               if (currentVoice && currentVoice.lang.startsWith(langCode)) return p;
               
+              // Prefer Samantha if available for English/default
+              const samantha = fallbackVoices.find(v => v.name === 'Samantha');
+              if (samantha) return { ...p, voice: samantha.name };
+
               const choice = fallbackVoices.length > 0 ? fallbackVoices[(idx + 1) % fallbackVoices.length] : voices[0];
               return { ...p, voice: choice.name };
           }));
@@ -324,8 +329,13 @@ const CreateDebate = () => {
                  // Try to assign a voice
                  let voiceName = '';
                  if (voices.length > 0) {
-                     const choice = fallbackVoices.length > 0 ? fallbackVoices[i % fallbackVoices.length] : voices[0];
-                     voiceName = choice.name;
+                     const samantha = fallbackVoices.find(v => v.name === 'Samantha');
+                     if (samantha) {
+                        voiceName = samantha.name;
+                     } else {
+                        const choice = fallbackVoices.length > 0 ? fallbackVoices[i % fallbackVoices.length] : voices[0];
+                        voiceName = choice.name;
+                     }
                  }
 
                  added.push({
@@ -419,7 +429,7 @@ const CreateDebate = () => {
   };
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
+    <div className="max-w-7xl mx-auto p-4 md:p-8">
       <button onClick={() => navigate('/')} className="flex items-center text-gray-600 mb-6 hover:text-gray-900">
         <ArrowLeft className="w-4 h-4 mr-2" /> Back to Home
       </button>
@@ -437,7 +447,7 @@ const CreateDebate = () => {
                     <input
                         type="text"
                         required
-                        className="w-full p-2 border border-gray-300 rounded-l focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:z-10"
+                        className="w-full h-10 p-2 border border-gray-300 rounded-l focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:z-10"
                         value={settings.topic}
                         onChange={e => setSettings({...settings, topic: e.target.value})}
                         placeholder="e.g. Is AI dangerous?"
@@ -445,7 +455,7 @@ const CreateDebate = () => {
                     <button
                         type="button"
                         onClick={() => setShowTemplates(!showTemplates)}
-                        className="px-3 border border-l-0 border-gray-300 bg-gray-50 rounded-r hover:bg-gray-100 flex items-center transition-colors"
+                        className="h-10 px-3 border border-l-0 border-gray-300 bg-gray-50 rounded-r hover:bg-gray-100 flex items-center transition-colors"
                         title="Choose from templates"
                     >
                         <ChevronDown className="w-4 h-4 text-gray-600" />
@@ -490,7 +500,7 @@ const CreateDebate = () => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
               <select
-                className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                className="w-full h-10 p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
                 value={settings.language}
                 onChange={e => setSettings({...settings, language: e.target.value})}
               >
@@ -530,7 +540,7 @@ const CreateDebate = () => {
              <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Response Length</label>
               <select
-                className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                className="w-full h-10 p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
                 value={settings.length_preset}
                 onChange={e => setSettings({...settings, length_preset: e.target.value})}
               >
@@ -544,7 +554,7 @@ const CreateDebate = () => {
                 <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Moderator Model</label>
                     <select
-                      className="w-full p-2 border border-gray-300 rounded"
+                      className="w-full h-10 p-2 border border-gray-300 rounded"
                       value={settings.moderator_model}
                       onChange={e => setSettings({...settings, moderator_model: e.target.value})}
                     >
@@ -557,7 +567,7 @@ const CreateDebate = () => {
                      <label className="block text-sm font-medium text-gray-700 mb-1">Moderator Voice</label>
                      <div className="flex space-x-2">
                         <select
-                          className="w-full p-2 border border-gray-300 rounded text-sm"
+                          className="w-full h-10 p-2 border border-gray-300 rounded text-sm"
                           value={settings.moderator_voice}
                           onChange={e => setSettings({...settings, moderator_voice: e.target.value})}
                         >
@@ -575,7 +585,7 @@ const CreateDebate = () => {
                         <button
                             type="button"
                             onClick={() => previewVoice(settings.moderator_voice, "Welcome to the debate.")}
-                            className="p-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded border border-blue-200"
+                            className="h-10 w-10 flex items-center justify-center bg-blue-50 hover:bg-blue-100 text-blue-600 rounded border border-blue-200"
                             title="Preview Voice"
                         >
                             <Volume2 className="w-4 h-4"/>
@@ -599,7 +609,7 @@ const CreateDebate = () => {
                     <input
                       type="text"
                       required
-                      className="w-full p-2 border border-gray-300 rounded"
+                      className="w-full h-10 p-2 border border-gray-300 rounded"
                       value={p.name}
                       onChange={e => updateParticipant(idx, 'name', e.target.value)}
                     />
@@ -608,7 +618,7 @@ const CreateDebate = () => {
                       <div>
                         <label className="block text-sm font-medium text-gray-700">Model</label>
                         <select
-                          className="w-full p-2 border border-gray-300 rounded text-sm"
+                          className="w-full h-10 p-2 border border-gray-300 rounded text-sm"
                           value={p.model}
                           onChange={e => updateParticipant(idx, 'model', e.target.value)}
                         >
@@ -621,7 +631,7 @@ const CreateDebate = () => {
                         <label className="block text-sm font-medium text-gray-700">Voice</label>
                          <div className="flex space-x-2">
                             <select
-                              className="w-full p-2 border border-gray-300 rounded text-sm"
+                              className="w-full h-10 p-2 border border-gray-300 rounded text-sm"
                               value={p.voice}
                               onChange={e => updateParticipant(idx, 'voice', e.target.value)}
                             >
@@ -637,7 +647,7 @@ const CreateDebate = () => {
                             <button
                                 type="button"
                                 onClick={() => previewVoice(p.voice, `Hello, I am ${p.name}`)}
-                                className="p-2 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded border border-gray-200 shrink-0"
+                                className="h-10 w-10 flex items-center justify-center bg-gray-50 hover:bg-gray-100 text-gray-600 rounded border border-gray-200 shrink-0"
                                 title="Preview Voice"
                             >
                                 <Volume2 className="w-4 h-4"/>
@@ -660,7 +670,7 @@ const CreateDebate = () => {
                                 <ChevronDown className="w-3 h-3 mr-1" /> Choose Style
                             </button>
                             {openStyleIdx === idx && (
-                                <div ref={styleRef} className="absolute right-0 top-full mt-1 w-64 bg-white border border-gray-200 rounded-md shadow-lg z-20 max-h-60 overflow-y-auto">
+                                <div ref={styleRef} className="absolute right-0 top-full mt-1 w-96 bg-white border border-gray-200 rounded-md shadow-lg z-20 max-h-60 overflow-y-auto">
                                     <div className="p-2 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Select Persona Style</div>
                                     {STYLE_PRESETS.map((style, sIdx) => (
                                         <button
