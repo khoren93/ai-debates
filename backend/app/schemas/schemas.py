@@ -25,6 +25,16 @@ class ModelsResponse(BaseModel):
     data: List[ModelInfo]
     timestamp: float
 
+class ValidateModelsRequest(BaseModel):
+    model_ids: List[str]
+
+class ValidationResult(BaseModel):
+    model_id: str
+    status: str  # "ok" | "error"
+
+class ValidateModelsResponse(BaseModel):
+    results: List[ValidationResult]
+
 # --- Debate Creation Schemas ---
 class ParticipantConfig(BaseModel):
     # For moderator, only model_id and display_name are needed

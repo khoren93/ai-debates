@@ -204,6 +204,7 @@ const getAvatarUrl = (seed: string) => `https://api.dicebear.com/9.x/bottts-neut
 const CreateDebate = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [validating, setValidating] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const templatesRef = useRef<HTMLDivElement>(null);
   
@@ -390,6 +391,40 @@ const CreateDebate = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setValidating(true);
+
+    try {
+      // Determine effective models
+      const defaultModModel = settings.moderator_model || (models.length > 0 ? models[0].id : '');
+      const modelIdsToValidate = [
+          defaultModModel,
+          ...participants.map(p => p.model)
+      ].filter((v, i, a) => v && a.indexOf(v) === i); // Unique non-empty values
+
+      // Validate Models
+      if (modelIdsToValidate.length > 0) {
+          const valRes = await api.post('/models/validate', { model_ids: modelIdsToValidate });
+          const failures = valRes.data.results.filter((r: any) => r.status !== 'ok');
+          
+          if (failures.length > 0) {
+              const failedIds = failures.map((f: any) => {
+                  const m = models.find(md => md.id === f.model_id);
+                  return m ? m.name : f.model_id;
+              }).join(', ');
+              
+              alert(`The following models are unresponsive: ${failedIds}. Please select different models.`);
+              setValidating(false);
+              return;
+          }
+      }
+    } catch (valErr) {
+        console.error("Validation check failed", valErr);
+        alert("Failed to validate models connectivity. Please try again.");
+        setValidating(false);
+        return;
+    }
+
+    setValidating(false);
     setLoading(true);
     try {
       const defaultModModel = settings.moderator_model || (models.length > 0 ? models[0].id : '');
@@ -550,6 +585,7 @@ const CreateDebate = () => {
                 value={settings.length_preset}
                 onChange={e => setSettings({...settings, length_preset: e.target.value})}
               >
+                <option value="very_short">Very Short (~50 words)</option>
                 <option value="short">Short (~100 words)</option>
                 <option value="medium">Medium (~250 words)</option>
                 <option value="long">Long (~500 words)</option>
@@ -740,10 +776,10 @@ const CreateDebate = () => {
 
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || validating}
           className="w-full flex items-center justify-center py-4 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50 font-bold text-lg"
         >
-          {loading ? 'Starting Debate...' : <><Plus className="w-5 h-5 mr-2"/> Start Debate</>}
+          {validating ? 'Validating Models...' : loading ? 'Starting Debate...' : <><Plus className="w-5 h-5 mr-2"/> Start Debate</>}
         </button>
       </form>
     </div>

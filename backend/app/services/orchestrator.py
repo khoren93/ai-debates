@@ -121,6 +121,7 @@ def process_turn_job(debate_id: str, seq_index: int):
         # Handling length_preset
         length_preset = conf.get('length_preset', 'medium')
         length_map = {
+            'very_short': 'Keep your response very short and concise, around 50 words.',
             'short': 'Keep your response short, around 100 words.',
             'medium': 'Keep your response medium length, around 250 words.',
             'long': 'You can provide a detailed response, around 500 words or more.'
