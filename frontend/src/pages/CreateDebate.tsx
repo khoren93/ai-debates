@@ -202,6 +202,11 @@ const getLangCode = (langName: string) => {
 
 const getAvatarUrl = (seed: string) => `https://api.dicebear.com/9.x/bottts-neutral/svg?seed=${seed}`;
 
+const formatPrice = (pricing: { prompt: string; completion: string }) => {
+    const c = parseFloat(pricing.completion) * 1000000;
+    return `$${c.toFixed(2)}`;
+};
+
 const CreateDebate = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
@@ -626,9 +631,11 @@ const CreateDebate = () => {
                                 <option key={m.id} value={m.id}>{m.name}</option>
                               ))}
                           </optgroup>
-                          <optgroup label={`Paid Models ${credits !== null && credits <= 0 ? '(Disabled due to low credits)' : ''}`}>
+                          <optgroup label={`Paid Models ${credits !== null && credits <= 0 ? '(Disabled due to low credits)' : '($ per 1M tokens)'}`}>
                               {models.filter(m => !m.is_free).map(m => (
-                                <option key={m.id} value={m.id} disabled={credits !== null && credits <= 0}>{m.name} ($)</option>
+                                <option key={m.id} value={m.id} disabled={credits !== null && credits <= 0}>
+                                    {m.name} ({formatPrice(m.pricing)})
+                                </option>
                               ))}
                           </optgroup>
                         </select>
@@ -741,9 +748,11 @@ const CreateDebate = () => {
                                 <option key={m.id} value={m.id}>{m.name}</option>
                               ))}
                           </optgroup>
-                          <optgroup label={`Paid Models ${credits !== null && credits <= 0 ? '(Disabled)' : ''}`}>
+                          <optgroup label={`Paid Models ${credits !== null && credits <= 0 ? '(Disabled)' : '($ per 1M tokens)'}`}>
                               {models.filter(m => !m.is_free).map(m => (
-                                <option key={m.id} value={m.id} disabled={credits !== null && credits <= 0}>{m.name} ($)</option>
+                                <option key={m.id} value={m.id} disabled={credits !== null && credits <= 0}>
+                                    {m.name} ({formatPrice(m.pricing)})
+                                </option>
                               ))}
                           </optgroup>
                         </select>
