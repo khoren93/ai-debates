@@ -1,4 +1,3 @@
-import React from 'react';
 import { Routes, Route } from 'react-router-dom';
 import DebateHistory from './pages/DebateHistory';
 import CreateDebate from './pages/CreateDebate';

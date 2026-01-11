@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
-import { ArrowLeft, Plus, ChevronDown, Volume2, PlayCircle } from 'lucide-react';
+import { ArrowLeft, Plus, ChevronDown, Volume2 } from 'lucide-react';
 import { TOPIC_TEMPLATES } from '../data/topics';
 import { STYLE_PRESETS } from '../data/styles';
 
@@ -11,11 +11,6 @@ interface Model {
   pricing: { prompt: string; completion: string; image: string; request: string };
   context_length: number;
   is_free: boolean;
-}
-
-interface Voice {
-    name: string;
-    lang: string;
 }
 
 const getLangCode = (langName: string) => {

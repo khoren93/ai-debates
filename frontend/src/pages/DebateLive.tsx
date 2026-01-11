@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import api from '../api/axios';
-import { ArrowLeft, User, Bot, Clock, Download, Volume2, Square, Play, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Bot, Clock, Download, Volume2, Square, Play, AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -78,19 +78,9 @@ const DebateLive = () => {
     // Use relative path or full URL from env
     const sse = new EventSource(`http://localhost:8000/debates/${id}/stream`);
 
-    sse.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      // Based on orchestrator.py events: "turn_delta", "turn_completed", "debate_completed"
-      // Note: orchestrator publishes: publish_event(debate_id, "turn_delta", payload)
-      // Redis wrapper sends { type, data } ? 
-      // Need to verify wrapper logic. Assuming wrapper sends raw JSON payload
-      
-      // Actually, my redis wrapper in events.py just publishes the payload string?
-      // Let's assume standard format: { type: "type", payload: {...} } OR the event names are used as type?
-      // SSE usually has event: type.
-      
-      // If the backend sends `event: turn_delta` then I should use `sse.addEventListener('turn_delta', ...)`
-    };
+    // sse.onmessage is not used because we listen to specific events below
+    // (turn_delta, turn_completed, debate_completed)
+    // Removed unused default handler to fix lint warning.
 
     sse.addEventListener('turn_delta', (e) => {
         const payload = JSON.parse(e.data);
