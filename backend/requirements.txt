@@ -14,3 +14,4 @@ tiktoken>=0.6.0
 tenacity>=8.2.0
 sse-starlette>=1.8.0
 sqladmin>=0.16.0
+greenlet>=3.0.0
