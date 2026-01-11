@@ -161,7 +161,11 @@ const CreateDebate = () => {
         
         if (modelsList.length > 0) {
             // Pick the first free model as default, or just the first available
-            const defaultModel = modelsList.find(m => m.is_free) || modelsList[0];
+            // Prefer xiaomi
+            let defaultModel = modelsList.find(m => m.id.includes('xiaomi/mimo') && m.is_free);
+            if (!defaultModel) {
+                 defaultModel = modelsList.find(m => m.is_free) || modelsList[0];
+            }
             
             setSettings(prev => ({ ...prev, moderator_model: defaultModel.id }));
             
