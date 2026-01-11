@@ -267,12 +267,15 @@ const CreateDebate = () => {
       // But simplifying: Just append if not found, or replace if specific pattern exists
       
       let newPrompt = p.prompt;
-      if (newPrompt.includes('Style: ')) {
-          newPrompt = newPrompt.replace(/Style: .*$/s, `Style: ${styleDesc}`);
+      if (newPrompt.includes('Style:')) {
+          // Replace existing Style section
+          // The regex looks for Style: ... until end of string, assuming style is at the end
+          newPrompt = newPrompt.replace(/Style:[\s\S]*$/, `Style: ${styleDesc}`);
       } else {
           newPrompt = `${newPrompt}\n\nStyle: ${styleDesc}`;
       }
       
+      updateParticipant(index, 'prompt', newPrompt);
       setOpenStyleIdx(null);
   }
 

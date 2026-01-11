@@ -6,10 +6,23 @@ from app.core.config import settings
 from app.core.db import init_db
 from app.api import routes_models, routes_presets, routes_debates, routes_stream
 
+# Admin
+from sqladmin import Admin
+from app.core.db import engine
+from app.admin.views import DebateAdmin, ParticipantAdmin, TurnAdmin, SessionAdmin
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Create tables
     await init_db()
+    
+    # Initialize Admin
+    admin = Admin(app, engine)
+    admin.add_view(DebateAdmin)
+    admin.add_view(ParticipantAdmin)
+    admin.add_view(TurnAdmin)
+    admin.add_view(SessionAdmin)
+    
     yield
     # Shutdown: Clean up if needed
 
