@@ -13,7 +13,7 @@ Watch the conversation unfold in real-time as a Moderator AI guides the discussi
 
 > **🚀 Live Demo Version is Coming Soon!**
 
-[![App Demo](https://s12.gifyu.com/images/bhtKK.gif)](https://gifyu.com/image/bhtKK)
+![App Demo](https://github.com/user-attachments/assets/54c6768d-8b00-43a9-baa7-1312c8dc01a4)
 
 ---
 
