@@ -68,7 +68,13 @@ class OpenRouterClient:
                     async with client.stream("POST", f"{self.BASE_URL}/chat/completions", json=payload, headers=headers) as response:
                         if response.status_code != 200:
                             err_text = await response.aread()
-                            print(f"[OpenRouter] Erorr Status {response.status_code} for {model}: {err_text}")
+                            err_decoded = err_text.decode('utf-8', errors='replace')
+                            print(f"--- [OPENROUTER ERROR START] ---")
+                            print(f"Model: {model}")
+                            print(f"Status: {response.status_code}")
+                            print(f"Response Body: {err_decoded}")
+                            print(f"--- [OPENROUTER ERROR END] ---")
+                            
                             # If it's a 400 error and we haven't tried merging yet, loop continue
                             if response.status_code == 400 and attempt == "standard" and "merged_system" in attempts:
                                 print(f"OpenRouter 400 Error for {model}, retrying with merged system prompt...")
@@ -125,7 +131,8 @@ class OpenRouterClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # Increased timeout to 30s for slow/cold models
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 async with client.stream("POST", f"{self.BASE_URL}/chat/completions", json=payload, headers=headers) as response:
                     if response.status_code != 200:
                         # Ensure we consume the error to avoid hanging
@@ -175,8 +182,13 @@ class OpenRouterClient:
                     # But usually we hit [DONE] or a chunk.
                     return True, None
 
+        except httpx.TimeoutException:
+            print(f"[OpenRouter] Timeout validating {model}")
+            return False, "Connection timed out (30s limit)"
         except Exception as e:
-            # print(f"Validation error for {model}: {e}")
+            import traceback
+            print(f"[OpenRouter] Validation EXCEPTION for {model}: {e}")
+            traceback.print_exc()
             return False, str(e)
 
 

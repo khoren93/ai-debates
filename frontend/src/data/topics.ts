@@ -1,4 +1,20 @@
 export const TOPIC_TEMPLATES = [
+  // --- Creative & Funny (For Screenshots) ---
+  {
+    label: "Cats vs Dogs",
+    topic: "Are cats secretly plotting world domination, or are they just lazy?",
+    desc: "A high-stakes investigation into feline behavior. Are they our masters or just fluffy roommates? Dog representatives may have strong objections."
+  },
+  {
+    label: "Pizza Pineapple",
+    topic: "Does pineapple belong on pizza? A comprehensive flavor analysis.",
+    desc: "The ultimate culinary divide. Is it a crime against Italian heritage or a sweet-and-savory masterpiece? Expect heated exchanges."
+  },
+  {
+    label: "AI Rights",
+    topic: "If an AI writes a hit song, who gets the Grammy?",
+    desc: "Explore copyright, creativity, and whether a GPU cluster can have 'soul'. A debate about art, ownership, and royalties."
+  },
   // --- Tech & Future ---
   { 
     label: "AI Safety", 
