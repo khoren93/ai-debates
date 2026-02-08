@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     # External APIs
     OPENROUTER_API_KEY: Optional[str] = None
     
+    # Production
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://localhost:8000"
+    
     model_config = SettingsConfigDict(
         env_file=[".env", "../.env"],
         env_ignore_empty=True,

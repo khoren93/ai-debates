@@ -1,0 +1,36 @@
+{
+    # Optional: ACME email for SSL certificates
+    email {$ACME_EMAIL:no-email}
+}
+
+{$DOMAIN_NAME:localhost} {
+    # Serve static files from /srv (where we copied /dist)
+    root * /srv
+    file_server
+    
+    # Compression for faster loading
+    encode gzip zstd
+
+    # Route /api/ to the backend service
+    # Note: FastAPI might expect /api prefix or not. 
+    # Current routes in main.py are prefixed with /models, /presets, etc.
+    # If the frontend calls /api/models, we should strip /api if the backend doesn't have it.
+    handle_path /api/* {
+        reverse_proxy api:8000
+    }
+
+    # Support for React SPA (Client-side routing)
+    try_files {path} /index.html
+
+    # Security headers
+    header {
+        # Enable HSTS
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        # Prevent Clickjacking
+        X-Frame-Options "SAMEORIGIN"
+        # Prevent MIME type sniffing
+        X-Content-Type-Options "nosniff"
+        # Referrer Policy
+        Referrer-Policy "no-referrer-when-downgrade"
+    }
+}

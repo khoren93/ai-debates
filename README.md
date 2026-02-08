@@ -47,14 +47,9 @@ Watch the conversation unfold in real-time as a Moderator AI guides the discussi
 
 ## 🚀 Getting Started
 
-Follow these steps to get a local copy up and running.
+Follow these steps to get a copy up and running locally or on your server.
 
-### Prerequisites
-
-- [Docker](https://www.docker.com/) installed on your machine.
-- An API Key from [OpenRouter](https://openrouter.ai/).
-
-### Installation
+### 🛠️ Local Installation
 
 1. **Clone the repository**
    ```bash
@@ -67,26 +62,49 @@ Follow these steps to get a local copy up and running.
    ```bash
    cp .env.example .env
    ```
-   Open `.env` and add your OpenRouter API Key:
-   ```dotenv
-   OPENROUTER_API_KEY=sk-or-v1-your-key-here
-   ```
+   For local testing, you only need to add your `OPENROUTER_API_KEY`. You can keep `DOMAIN_NAME=localhost`.
 
 3. **Run with Docker**
-   Build and start the application:
    ```bash
    docker-compose up -d --build
    ```
 
 4. **Access the App**
-   - **Frontend**: [http://localhost:5173](http://localhost:5173)
-   - **Backend API**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - **Frontend**: [http://localhost](http://localhost)
+   - **Backend API**: [http://localhost/api/docs](http://localhost/api/docs)
+
+---
+
+### 🌐 Server Deployment (Hetzner/VPS)
+
+1. **Point your domain** (e.g., `ai-debates.net`) to your server IP in Cloudflare/DNS.
+2. **SSH into your server** and install Docker:
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   ```
+3. **Clone and Setup**:
+   ```bash
+   git clone https://github.com/khoren93/ai-debates.git
+   cd ai-debates
+   cp .env.example .env
+   ```
+4. **Edit `.env`**:
+   - Set `DOMAIN_NAME=your-domain.com`
+   - Set `ACME_EMAIL=your@email.com` (for SSL)
+   - Set `OPENROUTER_API_KEY=...`
+   - Generate a strong `POSTGRES_PASSWORD`.
+5. **Start everything**:
+   ```bash
+   chmod +x deploy.sh
+   ./deploy.sh
+   ```
+   Caddy will automatically issue and manage SSL certificates for your domain.
 
 ---
 
 ## 📖 Usage
 
-1. Open the web interface at `http://localhost:5173`.
+1. Open the web interface at `https://your-domain.com` (or `http://localhost`).
 2. Click **"Create Debate"**.
 3. Enter a **Topic** (e.g., "Is AI sentient?").
 4. Configure your **Participants**:

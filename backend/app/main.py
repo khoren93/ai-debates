@@ -35,10 +35,9 @@ app = FastAPI(
 )
 
 # CORS Configuration
-origins = [
-    "http://localhost:3000",
-    "http://localhost:5173", # Vite default
-]
+# Pull allowed origins from environment variable, default to local dev
+allowed_origins_str = settings.ALLOWED_ORIGINS if hasattr(settings, "ALLOWED_ORIGINS") else "http://localhost:3000,http://localhost:5173"
+origins = [origin.strip() for origin in allowed_origins_str.split(",")]
 
 app.add_middleware(
     CORSMiddleware,
