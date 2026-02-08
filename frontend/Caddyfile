@@ -13,7 +13,7 @@
     encode gzip zstd
 
     # Robust API routing: matches /api and /api/*
-    handle_path /api* {
+    handle /api* {
         reverse_proxy api:8000 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}

@@ -13,7 +13,11 @@ git pull origin main
 echo "🏗️ Building and starting containers..."
 docker-compose up -d --build
 
-# 3. Clean up old images
+# 3. Database migrations
+echo "🗄️ Running database migrations..."
+docker-compose exec -T api alembic upgrade head
+
+# 4. Clean up old images
 echo "🧹 Cleaning up unused Docker images..."
 docker image prune -f
 

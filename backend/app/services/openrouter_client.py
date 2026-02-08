@@ -21,7 +21,7 @@ class OpenRouterClient:
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:3000", # TODO: Configure
+            "HTTP-Referer": settings.SITE_URL,
             "X-Title": settings.PROJECT_NAME,
         }
         

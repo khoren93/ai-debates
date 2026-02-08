@@ -14,8 +14,14 @@ class Settings(BaseSettings):
     # External APIs
     OPENROUTER_API_KEY: Optional[str] = None
     
+    # Production Secrets & Site Config
+    SITE_URL: str = "https://ai-debates.net"
+    ADMIN_USER: str = "admin"
+    ADMIN_PASSWORD: str = "changeme"
+    SECRET_KEY: str = "secret-key-for-sessions-change-me"
+
     # Production
-    ALLOWED_ORIGINS: str = "http://localhost,https://localhost,http://localhost:3000,http://localhost:5173,http://localhost:8000"
+    ALLOWED_ORIGINS: str = "https://ai-debates.net,http://localhost,https://localhost,http://localhost:3000,http://localhost:5173"
     
     model_config = SettingsConfigDict(
         env_file=[".env", "../.env"],

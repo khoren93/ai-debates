@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
@@ -10,19 +11,12 @@ from app.api import routes_models, routes_presets, routes_debates, routes_stream
 from sqladmin import Admin
 from app.core.db import engine
 from app.admin.views import DebateAdmin, ParticipantAdmin, TurnAdmin, SessionAdmin
+from app.admin.auth import authentication_backend
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Create tables
     await init_db()
-    
-    # Initialize Admin
-    admin = Admin(app, engine)
-    admin.add_view(DebateAdmin)
-    admin.add_view(ParticipantAdmin)
-    admin.add_view(TurnAdmin)
-    admin.add_view(SessionAdmin)
-    
     yield
     # Shutdown: Clean up if needed
 
@@ -30,13 +24,19 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     description="API for AI-driven debates using OpenRouter",
     version="0.1.0",
-    openapi_url="/openapi.json",
-    lifespan=lifespan,
-    root_path="/api"
+    openapi_url="/api/openapi.json",
+    lifespan=lifespan
 )
 
-# Disable redirect slashes to avoid Caddy/Uvicorn path prefix issues
-app.router.redirect_slashes = False
+# Sessions for Admin
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+
+# Initialize Admin
+admin = Admin(app, engine, authentication_backend=authentication_backend, base_url="/api/admin")
+admin.add_view(DebateAdmin)
+admin.add_view(ParticipantAdmin)
+admin.add_view(TurnAdmin)
+admin.add_view(SessionAdmin)
 
 # CORS Configuration
 # Pull allowed origins from environment variable, default to local dev
@@ -51,18 +51,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Routers
-app.include_router(routes_models.router, prefix="/models", tags=["models"])
-app.include_router(routes_presets.router, prefix="/presets", tags=["presets"])
-app.include_router(routes_debates.router, prefix="/debates", tags=["debates"])
+# Include Routers with /api prefix
+app.include_router(routes_models.router, prefix="/api/models", tags=["models"])
+app.include_router(routes_presets.router, prefix="/api/presets", tags=["presets"])
+app.include_router(routes_debates.router, prefix="/api/debates", tags=["debates"])
 # Note: Stream router handles its own prefix or we mount it here but often streams are direct paths
-# We'll mount it under /debates too for consistency: /debates/{id}/stream
-app.include_router(routes_stream.router, prefix="/debates", tags=["stream"])
+# We'll mount it under /api/debates too for consistency: /api/debates/{id}/stream
+app.include_router(routes_stream.router, prefix="/api/debates", tags=["stream"])
 
-@app.get("/")
+@app.get("/api")
 def read_root():
     return {"message": "Welcome to AI Debates API"}
 
-@app.get("/health")
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok"}
 def health_check():
     return {"status": "ok"}
