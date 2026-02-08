@@ -143,7 +143,13 @@ const CreateDebate = () => {
         setCredits(currentCredits);
 
         // Backend returns { data: [...], timestamp: ... }
-        let modelsList: Model[] = resModels.data.data || [];
+        // Ensure modelsList is always handled as an array
+        let modelsList: Model[] = [];
+        if (resModels.data && Array.isArray(resModels.data.data)) {
+            modelsList = resModels.data.data;
+        } else if (Array.isArray(resModels.data)) {
+            modelsList = resModels.data;
+        }
         
         // Sort: Free models first, then by name
         modelsList.sort((a, b) => {
@@ -544,12 +550,12 @@ const CreateDebate = () => {
                             onChange={e => setSettings({...settings, moderator_model: e.target.value})}
                             >
                             <optgroup label="Free Models">
-                                {models.filter(m => m.is_free).map(m => (
+                                {(models || []).filter(m => m.is_free).map(m => (
                                     <option key={m.id} value={m.id}>{m.name} ({formatContext(m.context_length)})</option>
                                 ))}
                             </optgroup>
                             <optgroup label={`Paid Models ${isPaidLocked ? '(Disabled due to low credits)' : '($ per 1M tokens)'}`}>
-                                {models.filter(m => !m.is_free).map(m => (
+                                {(models || []).filter(m => !m.is_free).map(m => (
                                     <option key={m.id} value={m.id} disabled={isPaidLocked}>
                                         {m.name} ({formatContext(m.context_length)} | {formatPrice(m.pricing)})
                                     </option>
@@ -582,12 +588,12 @@ const CreateDebate = () => {
                             onChange={e => setSettings({...settings, moderator_voice: e.target.value})}
                             >
                             <option value="">Default Browser Voice</option>
-                            {voices.filter(v => v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
+                            {(voices || []).filter(v => v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
                                 <option key={i} value={v.name}>{v.name.length > 30 ? v.name.slice(0,30)+'...' : v.name}</option>
                             ))}
                             {/* Fallback: Show others if needed or label group */}
                             <optgroup label="Other Languages">
-                                    {voices.filter(v => !v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
+                                    {(voices || []).filter(v => !v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
                                     <option key={i} value={v.name}>{v.name.length > 30 ? v.name.slice(0,30)+'...' : v.name} ({v.lang})</option>
                                     ))}
                             </optgroup>
@@ -634,7 +640,7 @@ const CreateDebate = () => {
         </div>
 
         <div className="grid md:grid-cols-2 gap-6">
-          {participants.map((p, idx) => (
+          {(participants || []).map((p, idx) => (
              <div key={idx} className="bg-white p-6 rounded-lg shadow border border-gray-200">
                <h2 className="text-xl font-semibold mb-4 text-gray-800">
                    {idx === 0 ? "Participant 1 (Pro)" : idx === 1 ? "Participant 2 (Con)" : `Participant ${idx + 1}`}
@@ -675,12 +681,12 @@ const CreateDebate = () => {
                           onChange={e => updateParticipant(idx, 'model', e.target.value)}
                         >
                           <optgroup label="Free Models">
-                              {models.filter(m => m.is_free).map(m => (
+                              {(models || []).filter(m => m.is_free).map(m => (
                                 <option key={m.id} value={m.id}>{m.name} ({formatContext(m.context_length)})</option>
                               ))}
                           </optgroup>
                           <optgroup label={`Paid Models ${isPaidLocked ? '(Disabled)' : '($ per 1M tokens)'}`}>
-                              {models.filter(m => !m.is_free).map(m => (
+                              {(models || []).filter(m => !m.is_free).map(m => (
                                 <option key={m.id} value={m.id} disabled={isPaidLocked}>
                                     {m.name} ({formatContext(m.context_length)} | {formatPrice(m.pricing)})
                                 </option>
@@ -696,11 +702,11 @@ const CreateDebate = () => {
                               value={p.voice}
                               onChange={e => updateParticipant(idx, 'voice', e.target.value)}
                             >
-                               {voices.filter(v => v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
+                               {(voices || []).filter(v => v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
                                    <option key={i} value={v.name}>{v.name.length > 25 ? v.name.slice(0,25)+'...' : v.name}</option>
                                ))}
                                <optgroup label="Other Languages">
-                                    {voices.filter(v => !v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
+                                    {(voices || []).filter(v => !v.lang.startsWith(getLangCode(settings.language))).map((v, i) => (
                                        <option key={i} value={v.name}>{v.name.length > 25 ? v.name.slice(0,25)+'...' : v.name} ({v.lang})</option>
                                     ))}
                                </optgroup>

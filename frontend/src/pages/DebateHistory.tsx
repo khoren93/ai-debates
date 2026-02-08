@@ -18,7 +18,13 @@ const DebateHistory = () => {
     const fetchDebates = async () => {
       try {
         const res = await api.get('/debates/');
-        setDebates(res.data);
+        // Ensure res.data is an array
+        if (Array.isArray(res.data)) {
+          setDebates(res.data);
+        } else {
+          console.error("API returned non-array data:", res.data);
+          setDebates([]);
+        }
       } catch (err) {
         console.error("Failed to fetch debates", err);
       } finally {
@@ -67,13 +73,13 @@ const DebateHistory = () => {
         </div>
         {loading ? (
              <div className="p-10 text-center text-gray-500">Loading...</div>
-        ) : debates.length === 0 ? (
+        ) : (debates || []).length === 0 ? (
              <div className="p-10 text-center text-gray-500">
                 No debates yet. Create one to get started!
              </div>
         ) : (
              <div className="divide-y divide-gray-100">
-               {debates.map((debate) => (
+               {(debates || []).map((debate) => (
                  <Link 
                    key={debate.id} 
                    to={`/debate/${debate.id}`}

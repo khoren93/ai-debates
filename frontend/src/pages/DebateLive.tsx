@@ -61,8 +61,12 @@ const DebateLive = () => {
     const fetchDebate = async () => {
       try {
         const res = await api.get(`/debates/${id}`);
-        setDebate(res.data);
-        setStatus(res.data.status);
+        if (res.data) {
+          setDebate(res.data);
+          setStatus(res.data.status || 'active');
+        } else {
+          setStatus('error');
+        }
       } catch (err) {
         console.error(err);
         setStatus('error');
@@ -96,10 +100,10 @@ const DebateLive = () => {
         setDebate(prev => {
             if (!prev) return null;
             // Check if turn already exists to avoid dupes
-            if (prev.turns.find(t => t.seq_index === payload.seq_index)) return prev;
+            if (prev.turns?.find(t => t.seq_index === payload.seq_index)) return prev;
             return {
                 ...prev,
-                turns: [...prev.turns, {
+                turns: [...(prev.turns || []), {
                     seq_index: payload.seq_index,
                     speaker_name: payload.speaker_name || "Speaker",
                     text: payload.text
@@ -130,7 +134,7 @@ const DebateLive = () => {
     
     // Or look up in participants list
     if (!debate) return false;
-    const p = debate.participants.find(p => p.name === speakerName);
+    const p = debate.participants?.find(p => p.name === speakerName);
     return p ? p.role === 'moderator' : false;
   };
 
@@ -140,7 +144,7 @@ const DebateLive = () => {
       if (!debate) return null;
       
       // Try to find explicit voice choice
-      const p = debate.participants.find(p => p.name === speakerName);
+      const p = debate.participants?.find(p => p.name === speakerName);
       if (p && p.voice_name) {
           const selected = voices.find(v => v.name === p.voice_name);
           if (selected) return selected;
@@ -187,7 +191,7 @@ const DebateLive = () => {
       window.speechSynthesis.cancel();
       
       // Read turns sequentially from startIndex
-      const turnsToRead = debate.turns.slice(startIndex);
+      const turnsToRead = debate.turns?.slice(startIndex) || [];
 
       for (const turn of turnsToRead) {
           if (!speakingRef.current) break;
@@ -211,13 +215,13 @@ const DebateLive = () => {
     if (!debate) return;
     
     // Sort turns
-    const sortedTurns = [...debate.turns].sort((a, b) => a.seq_index - b.seq_index);
+    const sortedTurns = [...(debate.turns || [])].sort((a, b) => a.seq_index - b.seq_index);
 
     let content = `# ${debate.title}\n`;
     content += `Date: ${new Date(debate.created_at).toLocaleString()}\n`;
     content += `Status: ${debate.status}\n\n`;
     content += `## Participants\n`;
-    debate.participants.forEach(p => {
+    debate.participants?.forEach(p => {
         content += `- ${p.role}: ${p.name} (${p.model})\n`;
     });
     content += `\n---\n\n`;
@@ -257,7 +261,7 @@ const DebateLive = () => {
         <div className="flex">
             <button 
                onClick={isSpeaking ? stopPlayback : () => startPlayback(0)}
-               disabled={!debate || debate.turns.length === 0}
+               disabled={!debate || !debate.turns || debate.turns.length === 0}
                className={`flex items-center px-4 py-2 border rounded-lg transition text-sm font-medium shadow-sm mr-2 ${isSpeaking ? 'bg-red-50 border-red-200 text-red-700 hover:bg-red-100' : 'bg-white border-gray-300 hover:bg-gray-50 disabled:opacity-50'}`}
             >
                {isSpeaking ? <Square className="w-4 h-4 mr-2 fill-current" /> : <Volume2 className="w-4 h-4 mr-2" />}
@@ -274,10 +278,10 @@ const DebateLive = () => {
       </div>
 
       <div className="flex w-full gap-4 mb-8 bg-gray-50 p-4 rounded-lg overflow-x-auto items-center">
-         {debate.participants.map((p, idx) => {
+         {(debate.participants || []).map((p, idx) => {
              const isDebater = idx > 0;
              // Parse model name: "provider/model-name" -> provider (bold), model-name (small)
-             const [provider, ...rest] = p.model.split('/');
+             const [provider, ...rest] = (p.model || "").split('/');
              const modelName = rest.length > 0 ? rest.join('/') : null;
 
              return (
@@ -306,9 +310,9 @@ const DebateLive = () => {
       </div>
 
       <div className="space-y-6">
-        {debate.turns.map((turn, index) => {
+        {(debate.turns || []).map((turn, index) => {
             const isMod = isModerator(turn.speaker_name);
-            const speaker = debate.participants.find(p => p.name === turn.speaker_name);
+            const speaker = (debate.participants || []).find(p => p.name === turn.speaker_name);
             const avatarUrl = speaker?.avatar;
 
             // Check for error (starts with [Error...)

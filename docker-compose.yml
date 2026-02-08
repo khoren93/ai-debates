@@ -54,6 +54,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=/api
     restart: always
     ports:
       - "80:80"

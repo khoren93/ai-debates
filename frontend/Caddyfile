@@ -1,36 +1,42 @@
 {
     # Optional: ACME email for SSL certificates
     email {$ACME_EMAIL:no-email}
+    # Local development: allow HTTP for localhost if needed, 
+    # but Caddy handles this automatically.
 }
 
 {$DOMAIN_NAME:localhost} {
-    # Serve static files from /srv (where we copied /dist)
+    # Serve static files from /srv
     root * /srv
-    file_server
     
-    # Compression for faster loading
+    # Compression
     encode gzip zstd
 
-    # Route /api/ to the backend service
-    # Note: FastAPI might expect /api prefix or not. 
-    # Current routes in main.py are prefixed with /models, /presets, etc.
-    # If the frontend calls /api/models, we should strip /api if the backend doesn't have it.
-    handle_path /api/* {
-        reverse_proxy api:8000
+    # Robust API routing: matches /api and /api/*
+    handle /api* {
+        # Strip the /api prefix before sending to backend
+        uri strip_prefix /api
+        # Ensure we always add a trailing slash if it's missing for the backend
+        # uri replace /debates /debates/ 
+        
+        reverse_proxy api:8000 {
+            # Standard proxy headers
+            header_up Host {upstream_hostport}
+            header_up X-Real-IP {remote_host}
+        }
     }
 
     # Support for React SPA (Client-side routing)
-    try_files {path} /index.html
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
 
     # Security headers
     header {
-        # Enable HSTS
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        # Prevent Clickjacking
         X-Frame-Options "SAMEORIGIN"
-        # Prevent MIME type sniffing
         X-Content-Type-Options "nosniff"
-        # Referrer Policy
         Referrer-Policy "no-referrer-when-downgrade"
     }
 }
