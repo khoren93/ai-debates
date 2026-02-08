@@ -66,7 +66,7 @@ Follow these steps to get a copy up and running locally or on your server.
 
 3. **Run with Docker**
    ```bash
-   docker-compose up -d --build
+   docker compose up -d --build
    ```
 
 4. **Access the App**

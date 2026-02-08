@@ -11,11 +11,11 @@ git pull origin main
 
 # 2. Rebuild and restart containers
 echo "🏗️ Building and starting containers..."
-docker-compose up -d --build
+docker compose up -d --build
 
 # 3. Database migrations
 echo "🗄️ Running database migrations..."
-docker-compose exec -T api alembic upgrade head
+docker compose exec -T api alembic upgrade head
 
 # 4. Clean up old images
 echo "🧹 Cleaning up unused Docker images..."
