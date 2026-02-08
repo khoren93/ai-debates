@@ -17,7 +17,7 @@ const DebateHistory = () => {
   useEffect(() => {
     const fetchDebates = async () => {
       try {
-        const res = await api.get('/debates/');
+        const res = await api.get('/debates');
         // Ensure res.data is an array
         if (Array.isArray(res.data)) {
           setDebates(res.data);

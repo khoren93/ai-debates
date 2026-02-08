@@ -30,9 +30,13 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     description="API for AI-driven debates using OpenRouter",
     version="0.1.0",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
-    lifespan=lifespan
+    openapi_url="/openapi.json",
+    lifespan=lifespan,
+    root_path="/api"
 )
+
+# Disable redirect slashes to avoid Caddy/Uvicorn path prefix issues
+app.router.redirect_slashes = False
 
 # CORS Configuration
 # Pull allowed origins from environment variable, default to local dev

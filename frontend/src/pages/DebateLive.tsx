@@ -79,8 +79,12 @@ const DebateLive = () => {
   useEffect(() => {
     if (!id) return;
     
-    // Use relative path or full URL from env
-    const sse = new EventSource(`http://localhost:8000/debates/${id}/stream`);
+    // In production, we should use the proxy path /api
+    const sseUrl = window.location.hostname === 'localhost' && window.location.port !== '443' && !window.location.protocol.includes('https')
+        ? `http://localhost:8000/debates/${id}/stream` 
+        : `/api/debates/${id}/stream`;
+
+    const sse = new EventSource(sseUrl);
 
     // sse.onmessage is not used because we listen to specific events below
     // (turn_delta, turn_completed, debate_completed)

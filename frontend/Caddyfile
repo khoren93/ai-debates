@@ -13,16 +13,11 @@
     encode gzip zstd
 
     # Robust API routing: matches /api and /api/*
-    handle /api* {
-        # Strip the /api prefix before sending to backend
-        uri strip_prefix /api
-        # Ensure we always add a trailing slash if it's missing for the backend
-        # uri replace /debates /debates/ 
-        
+    handle_path /api* {
         reverse_proxy api:8000 {
-            # Standard proxy headers
-            header_up Host {upstream_hostport}
+            header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
         }
     }
 

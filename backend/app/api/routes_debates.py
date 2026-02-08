@@ -12,7 +12,7 @@ from app.services.queue_manager import enqueue_debate_start
 
 router = APIRouter()
 
-@router.get("/", response_model=List[Dict[str, Any]])
+@router.get("", response_model=List[Dict[str, Any]])
 async def list_debates(db: AsyncSession = Depends(get_db)) -> List[Dict[str, Any]]:
     """List all debates ordered by creation time."""
     stmt = select(Debate).order_by(Debate.created_at.desc())
@@ -29,7 +29,7 @@ async def list_debates(db: AsyncSession = Depends(get_db)) -> List[Dict[str, Any
     ]
 
 
-@router.post("/", response_model=DebateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=DebateResponse, status_code=status.HTTP_201_CREATED)
 async def create_debate(
     config: DebateConfig,
     db: AsyncSession = Depends(get_db)

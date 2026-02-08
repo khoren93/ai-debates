@@ -135,7 +135,7 @@ const CreateDebate = () => {
     const fetchModels = async () => {
       try {
         const [resModels, resCredits] = await Promise.all([
-            api.get('/models/'),
+            api.get('/models'),
             api.get('/models/credits')
         ]);
 
@@ -389,7 +389,7 @@ const CreateDebate = () => {
         ]
       };
 
-      const res = await api.post('/debates/', payload);
+      const res = await api.post('/debates', payload);
       navigate(`/debate/${res.data.debate_id}`);
     } catch (err) {
       console.error("Failed to create debate", err);
