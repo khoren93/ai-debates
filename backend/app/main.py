@@ -4,7 +4,6 @@ from starlette.middleware.sessions import SessionMiddleware
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.core.db import init_db
 from app.api import routes_models, routes_presets, routes_debates, routes_stream
 
 # Admin
@@ -15,8 +14,6 @@ from app.admin.auth import authentication_backend
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Create tables
-    await init_db()
     yield
     # Shutdown: Clean up if needed
 
