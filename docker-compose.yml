@@ -27,11 +27,8 @@ services:
     restart: always
     # Production command with proxy headers
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost,https://${DOMAIN_NAME:-localhost}}
+    env_file:
+      - .env
     depends_on:
       - db
       - redis
@@ -41,10 +38,8 @@ services:
     build: ./backend
     restart: always
     command: python -m app.worker
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    env_file:
+      - .env
     depends_on:
       - db
       - redis

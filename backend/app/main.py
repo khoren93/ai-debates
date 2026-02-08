@@ -25,6 +25,8 @@ app = FastAPI(
     description="API for AI-driven debates using OpenRouter",
     version="0.1.0",
     openapi_url="/api/openapi.json",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
     lifespan=lifespan
 )
 
