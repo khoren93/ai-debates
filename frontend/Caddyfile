@@ -14,11 +14,7 @@
 
     # Robust API routing: matches /api and /api/*
     handle /api* {
-        reverse_proxy api:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-Proto {scheme}
-        }
+        reverse_proxy api:8000
     }
 
     # Support for React SPA (Client-side routing)

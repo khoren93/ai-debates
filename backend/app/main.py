@@ -65,5 +65,3 @@ def read_root():
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
-def health_check():
-    return {"status": "ok"}
