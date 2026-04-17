@@ -1,0 +1,10 @@
+services:
+  frontend:
+    ports: !reset []
+    networks:
+      - default
+      - caddy_net
+
+networks:
+  caddy_net:
+    external: true

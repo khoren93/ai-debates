@@ -46,6 +46,7 @@ services:
 
   # Frontend + Caddy Proxy
   frontend:
+    container_name: ai-debates-frontend-1
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -54,18 +55,11 @@ services:
     restart: always
     ports:
       - "80:80"
-      - "443:443"
     environment:
-      - DOMAIN_NAME=${DOMAIN_NAME:-localhost}
-      - ACME_EMAIL=${ACME_EMAIL:-no-email}
+      - DOMAIN_NAME=:80
       - VITE_API_URL=/api
     depends_on:
       - api
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
 
 volumes:
   postgres_data:
-  caddy_data:
-  caddy_config:

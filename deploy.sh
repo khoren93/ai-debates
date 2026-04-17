@@ -11,7 +11,7 @@ git pull origin main
 
 # 2. Rebuild and restart containers
 echo "🏗️ Building and starting containers..."
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 
 # 3. Database migrations
 echo "🗄️ Running database migrations..."
