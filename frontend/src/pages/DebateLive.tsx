@@ -79,10 +79,7 @@ const DebateLive = () => {
   useEffect(() => {
     if (!id) return;
     
-    // In production, we should use the proxy path /api
-    const sseUrl = window.location.hostname === 'localhost' && window.location.port !== '443' && !window.location.protocol.includes('https')
-        ? `http://localhost:8000/debates/${id}/stream` 
-        : `/api/debates/${id}/stream`;
+    const sseUrl = `/api/debates/${id}/stream`;
 
     const sse = new EventSource(sseUrl);
 
