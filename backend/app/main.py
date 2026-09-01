@@ -1,67 +1,102 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
+import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from app.core.config import settings
-from app.api import routes_models, routes_presets, routes_debates, routes_stream
-
-# Admin
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqladmin import Admin
-from app.core.db import engine
-from app.admin.views import DebateAdmin, ParticipantAdmin, TurnAdmin, SessionAdmin
+from sqlalchemy import text
+from starlette.middleware.sessions import SessionMiddleware
+
 from app.admin.auth import authentication_backend
+from app.admin.views import DebateAdmin, ParticipantAdmin, SessionAdmin, TurnAdmin
+from app.api import routes_debates, routes_models, routes_presets, routes_stream
+from app.core.config import settings
+from app.core.db import engine
+from app.core.logging import setup_logging
+from app.core.redis import close_async_redis, get_async_redis
+
+setup_logging()
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    insecure = settings.insecure_defaults()
+    if insecure:
+        message = f"Placeholder secrets in use: {', '.join(insecure)}"
+        if settings.is_production:
+            logger.error(message)
+        else:
+            logger.warning(message)
+    if not settings.OPENROUTER_API_KEY:
+        logger.warning("OPENROUTER_API_KEY is not set; only user-supplied keys will work")
     yield
-    # Shutdown: Clean up if needed
+    await close_async_redis()
+    await engine.dispose()
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="API for AI-driven debates using OpenRouter",
-    version="0.1.0",
+    version="0.2.0",
     openapi_url="/api/openapi.json",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
-# Sessions for Admin
-app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+# Sessions (admin login)
+app.add_middleware(
+    SessionMiddleware, secret_key=settings.SECRET_KEY, https_only=settings.is_production
+)
 
-# Initialize Admin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Admin panel
 admin = Admin(app, engine, authentication_backend=authentication_backend, base_url="/api/admin")
 admin.add_view(DebateAdmin)
 admin.add_view(ParticipantAdmin)
 admin.add_view(TurnAdmin)
 admin.add_view(SessionAdmin)
 
-# CORS Configuration
-# Pull allowed origins from environment variable, default to local dev
-allowed_origins_str = settings.ALLOWED_ORIGINS if hasattr(settings, "ALLOWED_ORIGINS") else "http://localhost:3000,http://localhost:5173"
-origins = [origin.strip() for origin in allowed_origins_str.split(",")]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Include Routers with /api prefix
+# Routers
 app.include_router(routes_models.router, prefix="/api/models", tags=["models"])
 app.include_router(routes_presets.router, prefix="/api/presets", tags=["presets"])
 app.include_router(routes_debates.router, prefix="/api/debates", tags=["debates"])
-# Note: Stream router handles its own prefix or we mount it here but often streams are direct paths
-# We'll mount it under /api/debates too for consistency: /api/debates/{id}/stream
 app.include_router(routes_stream.router, prefix="/api/debates", tags=["stream"])
 
-@app.get("/api")
-def read_root():
-    return {"message": "Welcome to AI Debates API"}
 
-@app.get("/api/health")
-def health_check():
-    return {"status": "ok"}
+@app.get("/api", tags=["meta"])
+def read_root() -> dict[str, str]:
+    return {"message": "Welcome to AI Debates API", "docs": "/api/docs"}
+
+
+@app.get("/api/health", tags=["meta"])
+async def health_check() -> JSONResponse:
+    """Liveness + readiness: verifies database and Redis connectivity."""
+    checks: dict[str, str] = {}
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        checks["database"] = f"error: {e.__class__.__name__}"
+    try:
+        await get_async_redis().ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e.__class__.__name__}"
+
+    healthy = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={"status": "ok" if healthy else "degraded", "checks": checks},
+    )

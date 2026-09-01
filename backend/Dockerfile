@@ -1,27 +1,27 @@
-# Use an official Python runtime as a parent image
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1.7
+FROM python:3.13-slim
 
-# Set environment variables
-# PYTHONDONTWRITEBYTECODE: Prevents Python from writing pyc files to disc
-# PYTHONUNBUFFERED: Prevents Python from buffering stdout and stderr
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+# uv for fast, reproducible installs (versions pinned in uv.lock)
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
 
-# Set work directory
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+
 WORKDIR /code
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install dependencies first so this layer is cached between code changes.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
-# Install python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
-
-# Copy project
 COPY . .
 
-# Expose port (for api service)
+RUN useradd --create-home --uid 1000 app && chown -R app:app /code
+USER app
+
 EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

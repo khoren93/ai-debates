@@ -1,153 +1,212 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
-from typing import List, Dict, Any
+import contextlib
+import logging
 import uuid
 
-from app.core.db import get_db
-from app.models.models import Debate, DebateParticipant
-from app.schemas.schemas import DebateConfig, DebateResponse
-from app.services.queue_manager import enqueue_debate_start
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from redis.exceptions import RedisError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
+from app.core.config import settings
+from app.core.db import get_db
+from app.core.ratelimit import enforce_debate_create_limit
+from app.core.redis import get_async_redis, provider_key_key, stop_flag_key
+from app.models.models import Debate, DebateParticipant, Turn, utcnow
+from app.schemas.schemas import (
+    DebateConfig,
+    DebateDetail,
+    DebateResponse,
+    DebateSettingsOut,
+    DebateSummary,
+    DebateTotals,
+    ParticipantOut,
+    StopDebateResponse,
+    TurnOut,
+    TurnUsage,
+)
+from app.services.events import publish_event_async
+from app.services.queue_manager import enqueue_debate_start
+from app.services.scheduler import speaker_role_for
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
-@router.get("", response_model=List[Dict[str, Any]])
-async def list_debates(db: AsyncSession = Depends(get_db)) -> List[Dict[str, Any]]:
-    """List all debates ordered by creation time."""
-    stmt = select(Debate).order_by(Debate.created_at.desc())
-    result = await db.execute(stmt)
-    debates = result.scalars().all()
+
+def _parse_uuid(debate_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(debate_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid debate id") from e
+
+
+def _totals(debate: Debate) -> DebateTotals:
+    return DebateTotals.model_validate(debate.totals_json or {})
+
+
+def _turn_out(turn: Turn) -> TurnOut:
+    return TurnOut(
+        seq_index=turn.seq_index,
+        round_id=turn.round_id,
+        turn_type=turn.turn_type,
+        speaker_role=speaker_role_for(turn.turn_type),  # type: ignore[arg-type]
+        speaker_name=turn.speaker_name,
+        text=turn.text,
+        error=turn.error,
+        model_used=turn.model_used,
+        usage=TurnUsage.model_validate(turn.usage_json or {}),
+        created_at=turn.created_at,
+    )
+
+
+@router.get("", response_model=list[DebateSummary])
+async def list_debates(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> list[DebateSummary]:
+    """List debates, newest first."""
+    stmt = select(Debate).order_by(Debate.created_at.desc()).limit(limit).offset(offset)
+    debates = (await db.execute(stmt)).scalars().all()
     return [
-        {
-            "id": str(d.id),
-            "title": d.title,
-            "status": d.status,
-            "created_at": d.created_at
-        }
+        DebateSummary(
+            id=str(d.id), title=d.title, status=d.status, created_at=d.created_at, totals=_totals(d)
+        )
         for d in debates
     ]
 
 
-@router.post("", response_model=DebateResponse, status_code=status.HTTP_201_CREATED)
-async def create_debate(
-    config: DebateConfig,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Create a new debate and enqueue it for processing.
-    """
-    # 1. Create Debate record
-    new_debate = Debate(
+@router.post(
+    "",
+    response_model=DebateResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_debate_create_limit)],
+)
+async def create_debate(config: DebateConfig, db: AsyncSession = Depends(get_db)) -> DebateResponse:
+    """Create a debate and enqueue it for the worker."""
+    provider_key = config.user_provider_key
+    debate = Debate(
         title=f"Debate: {config.topic}",
-        config_json=config.model_dump(),
-        status="queued"
+        # The user's API key is deliberately kept out of the database.
+        config_json=config.model_dump(exclude={"user_provider_key"}),
+        status="queued",
     )
-    db.add(new_debate)
-    await db.flush() # flush to get ID
-    
-    # 2. Add Participants (for analytics)
-    # Moderator
-    mod_config = next((p for p in config.participants if p.role == 'moderator'), None)
-    if mod_config:
-        mod_participant = DebateParticipant(
-            debate_id=new_debate.id,
-            role="moderator",
-            model_id=mod_config.model_id,
-            persona_name=mod_config.display_name,
-            voice_name=mod_config.voice_name,
-            avatar_url=mod_config.avatar_url
-        )
-        db.add(mod_participant)
+    db.add(debate)
+    await db.flush()
 
-    # Debaters
     for p in config.participants:
-        if p.role == 'debater':
-            deb_participant = DebateParticipant(
-                debate_id=new_debate.id,
-                role="debater",
+        db.add(
+            DebateParticipant(
+                debate_id=debate.id,
+                role=p.role,
                 model_id=p.model_id,
                 persona_name=p.display_name,
                 voice_name=p.voice_name,
-                avatar_url=p.avatar_url
+                avatar_url=p.avatar_url,
             )
-            db.add(deb_participant)
-    
+        )
     await db.commit()
-    
-    # 3. Enqueue Job
+    debate_id = str(debate.id)
+
     try:
-        enqueue_debate_start(str(new_debate.id))
-    except Exception as e:
-        print(f"Failed to enqueue: {e}")
-        # In a real app we might want to rollback or mark as error, 
-        # but for now we just verify redis connection is up
-        new_debate.status = "error"
+        if provider_key:
+            await get_async_redis().set(
+                provider_key_key(debate_id), provider_key, ex=settings.PROVIDER_KEY_TTL
+            )
+        await run_in_threadpool(enqueue_debate_start, debate_id)
+    except RedisError:
+        logger.exception("Failed to enqueue debate %s", debate_id)
+        debate.status = "error"
+        debate.error_message = "Job queue unavailable"
         await db.commit()
-        raise HTTPException(status_code=500, detail="Failed to start debate worker")
-        
-    return {
-        "debate_id": str(new_debate.id),
-        "status": "queued",
-        "message": "Debate created and queued successfully"
-    }
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Job queue is unavailable, please try again later",
+        ) from None
 
-@router.delete("/{debate_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_debate(debate_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a debate and its history."""
-    try:
-        uuid_id = uuid.UUID(debate_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid UUID")
+    return DebateResponse(debate_id=debate_id, status="queued", message="Debate created and queued")
 
-    debate = await db.get(Debate, uuid_id)
-    if not debate:
-        raise HTTPException(status_code=404, detail="Debate not found")
-    
-    await db.delete(debate)
-    await db.commit()
-    return None
 
-@router.get("/{debate_id}", response_model=Dict[str, Any])
-async def get_debate(debate_id: str, db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
-    """
-    Get debate details and status, including turns and participants.
-    """
-    try:
-        uuid_id = uuid.UUID(debate_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid UUID")
-
+@router.get("/{debate_id}", response_model=DebateDetail)
+async def get_debate(debate_id: str, db: AsyncSession = Depends(get_db)) -> DebateDetail:
+    """Debate details including participants and all turns."""
+    uuid_id = _parse_uuid(debate_id)
     stmt = (
         select(Debate)
         .options(selectinload(Debate.turns), selectinload(Debate.participants))
         .where(Debate.id == uuid_id)
     )
-    result = await db.execute(stmt)
-    debate = result.scalar_one_or_none()
-    
+    debate = (await db.execute(stmt)).scalar_one_or_none()
     if not debate:
         raise HTTPException(status_code=404, detail="Debate not found")
-        
-    return {
-        "id": str(debate.id),
-        "status": debate.status,
-        "title": debate.title,
-        "created_at": debate.created_at,
-        "participants": [
-            {"name": p.persona_name, "role": p.role, "model": p.model_id, "voice_name": p.voice_name, "avatar": p.avatar_url}
+
+    conf = debate.config_json or {}
+    return DebateDetail(
+        id=str(debate.id),
+        status=debate.status,
+        title=debate.title,
+        error_message=debate.error_message,
+        created_at=debate.created_at,
+        started_at=debate.started_at,
+        ended_at=debate.ended_at,
+        settings=DebateSettingsOut(
+            topic=conf.get("topic", ""),
+            description=conf.get("description"),
+            language=conf.get("language", "English"),
+            num_rounds=int(conf.get("num_rounds") or 1),
+            length_preset=conf.get("length_preset", "medium"),
+            intensity=int(conf.get("intensity") or 5),
+        ),
+        totals=_totals(debate),
+        participants=[
+            ParticipantOut(
+                name=p.persona_name,
+                role=p.role,
+                model=p.model_id,
+                voice_name=p.voice_name,
+                avatar=p.avatar_url,
+            )
             for p in debate.participants
         ],
-        "turns": sorted(
-            [
-                {
-                    "seq_index": t.seq_index,
-                    "speaker_name": t.speaker_name,
-                    "text": t.text,
-                    "created_at": t.created_at
-                }
-                for t in debate.turns
-            ],
-            key=lambda x: x["seq_index"]
-        )
-    }
+        turns=[_turn_out(t) for t in debate.turns],
+    )
+
+
+@router.post("/{debate_id}/stop", response_model=StopDebateResponse)
+async def stop_debate(debate_id: str, db: AsyncSession = Depends(get_db)) -> StopDebateResponse:
+    """Stop a queued or running debate. The current turn finishes early."""
+    uuid_id = _parse_uuid(debate_id)
+    debate = await db.get(Debate, uuid_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found")
+    if debate.status not in ("queued", "running"):
+        raise HTTPException(status_code=409, detail=f"Debate is already {debate.status}")
+
+    debate.status = "stopped"
+    debate.ended_at = utcnow()
+    await db.commit()
+
+    try:
+        await get_async_redis().set(stop_flag_key(debate_id), "1", ex=3600)
+    except RedisError:
+        logger.warning("Could not set stop flag for %s; worker will stop at next turn", debate_id)
+    await publish_event_async(
+        debate_id, "debate_stopped", {"debate_id": debate_id, "status": "stopped"}
+    )
+    return StopDebateResponse(debate_id=debate_id, status="stopped")
+
+
+@router.delete("/{debate_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_debate(debate_id: str, db: AsyncSession = Depends(get_db)) -> None:
+    """Delete a debate and its history."""
+    uuid_id = _parse_uuid(debate_id)
+    debate = await db.get(Debate, uuid_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found")
+    if debate.status in ("queued", "running"):
+        # Make sure the worker stops touching it.
+        with contextlib.suppress(RedisError):
+            await get_async_redis().set(stop_flag_key(debate_id), "1", ex=3600)
+    await db.delete(debate)
+    await db.commit()

@@ -46,3 +46,8 @@ MANIFEST
 node_modules/
 npm-debug.log
 yarn-error.log
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+*.tsbuildinfo

@@ -29,19 +29,21 @@ Watch the conversation unfold in real-time as a Moderator AI guides the discussi
 ## 🛠️ Tech Stack
 
 ### Backend
-- **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Python)
-- **Database**: PostgreSQL (Async SQLAlchemy)
+- **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Python 3.12+, managed with [uv](https://docs.astral.sh/uv/))
+- **Database**: PostgreSQL (async SQLAlchemy 2 + Alembic migrations)
 - **Queue**: Redis & RQ (Redis Queue) for reliable task orchestration
-- **AI Integration**: [OpenRouter](https://openrouter.ai/) API
+- **AI Integration**: [OpenRouter](https://openrouter.ai/) API (streaming, token & cost accounting)
+- **Quality**: ruff, pyright, pytest
 
 ### Frontend
-- **Framework**: [React](https://react.dev/) (Vite)
-- **Styling**: TailwindCSS
+- **Framework**: [React 19](https://react.dev/) + [Vite 8](https://vite.dev/) + TypeScript
+- **Styling**: Tailwind CSS 4
 - **State/Routing**: React Router, Axios
 - **Streaming**: Server-Sent Events (SSE)
 
 ### DevOps
-- **IDE**: Visual Studio Code
+- **Containers**: Docker Compose (Postgres, Redis, API, worker, Caddy)
+- **CI**: GitHub Actions (lint, type-check, tests, build)
 
 ---
 
@@ -49,7 +51,7 @@ Watch the conversation unfold in real-time as a Moderator AI guides the discussi
 
 Follow these steps to get a copy up and running locally or on your server.
 
-### 🛠️ Local Installation
+### 🐳 Quick start with Docker
 
 1. **Clone the repository**
    ```bash
@@ -57,21 +59,56 @@ Follow these steps to get a copy up and running locally or on your server.
    cd ai-debates
    ```
 
-2. **Configure Environment**
-   Copy the example environment file:
+2. **Configure environment**
    ```bash
    cp .env.example .env
    ```
-   For local testing, you only need to add your `OPENROUTER_API_KEY`. You can keep `DOMAIN_NAME=localhost`.
+   For local testing you only need to set `OPENROUTER_API_KEY`. Keep `DOMAIN_NAME=localhost`.
 
-3. **Run with Docker**
+3. **Run**
    ```bash
    docker compose up -d --build
    ```
+   Database migrations run automatically when the API container starts.
 
-4. **Access the App**
+4. **Open**
    - **Frontend**: [http://localhost](http://localhost)
-   - **Backend API**: [http://localhost/api/docs](http://localhost/api/docs)
+   - **API docs**: [http://localhost/api/docs](http://localhost/api/docs)
+   - **Admin panel**: [http://localhost/api/admin](http://localhost/api/admin) (`ADMIN_USER` / `ADMIN_PASSWORD`)
+
+### 💻 Local development (hot reload)
+
+Prerequisites: [uv](https://docs.astral.sh/uv/), Node.js 20.19+ and Docker.
+
+```bash
+# 1. Infrastructure only (Postgres on :5432, Redis on :6379)
+docker compose -f docker-compose.dev.yml up -d
+
+# 2. Backend API (http://localhost:8000/api/docs)
+cd backend
+uv sync
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload
+
+# 3. Worker (second terminal). SimpleWorker avoids fork issues on macOS.
+cd backend
+RQ_SIMPLE_WORKER=true uv run python -m app.worker
+
+# 4. Frontend (third terminal, http://localhost:5173 — proxies /api to the backend)
+cd frontend
+npm install
+npm run dev
+```
+
+Leave `DATABASE_URL` and `REDIS_URL` unset in `.env`: the defaults point at localhost, and
+`docker compose` injects the container addresses itself.
+
+**Checks**
+
+```bash
+cd backend && uv run ruff check . && uv run pyright && uv run pytest
+cd frontend && npm run check && npm run build
+```
 
 ---
 
@@ -95,10 +132,11 @@ Follow these steps to get a copy up and running locally or on your server.
    - Generate a strong `POSTGRES_PASSWORD`.
 5. **Start everything**:
    ```bash
-   chmod +x deploy.sh
    ./deploy.sh
    ```
-   Caddy will automatically issue and manage SSL certificates for your domain.
+   `deploy.sh` pulls the latest code, rebuilds the containers (migrations run on start) and
+   prunes old images. In production set `ENVIRONMENT=production` and replace every placeholder
+   secret in `.env` (`SECRET_KEY`, `ADMIN_PASSWORD`, `POSTGRES_PASSWORD`).
 
 ---
 
@@ -120,22 +158,29 @@ Follow these steps to get a copy up and running locally or on your server.
 
 The system uses an event-driven architecture to handle long-running LLM generation tasks without blocking the UI.
 
-1. **API Layer**: Receives a request to create a debate.
-2. **Database**: Saves the initial debate configuration with status `queued`.
-3. **Queue (RQ)**: A job is pushed to the Redis Queue.
-4. **Worker**: Picks up the job and acts as the "Orchestrator".
-   - It builds the prompt for the current speaker.
-   - Calls OpenRouter API.
-   - Streams the response back to Redis Pub/Sub.
-5. **Frontend**: Subscribes to the debate channel via SSE (Server-Sent Events) and updates the UI in real-time.
+1. **API Layer**: `POST /api/debates` validates the configuration and saves the debate with status `queued`.
+   A user-supplied OpenRouter key is kept only in Redis for the lifetime of the debate, never in the database.
+2. **Queue (RQ)**: A chain of jobs runs in the worker: `start` → one job per turn → `verdict` → `finish`.
+3. **Scheduler**: Every round starts with the moderator (introduction, then short transitions) followed by
+   each debater. Debater turns are typed `opening` / `rebuttal` / `closing`; the moderator's model then
+   delivers a structured verdict.
+4. **Worker**: Builds role-specific prompts, streams the OpenRouter response, records token usage and cost
+   per turn, and publishes events to Redis Pub/Sub. A debate can be stopped at any time from the UI.
+5. **Frontend**: Subscribes to `GET /api/debates/{id}/stream` (SSE) and renders turns token-by-token.
+   Finished debates are served straight from the database.
+
+**Configuration** (see `.env.example`): `OPENROUTER_API_KEY`, `ALLOWED_ORIGINS`, `DEBATE_CREATE_RATE_LIMIT`
+(debates per IP per hour), `TURN_JOB_TIMEOUT`, `ADMIN_USER` / `ADMIN_PASSWORD`, `SECRET_KEY`.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] **Voice Synthesis (TTS)**: Hear the debaters speak!
+- [x] **Voice Synthesis (TTS)**: Browser text-to-speech playback.
+- [ ] **Neural TTS**: High-quality voices via a TTS API.
 - [ ] **User Voting**: Let the audience decide the winner.
-- [ ] **Export Transcripts**: Save debates as PDF/Text.
+- [x] **Export Transcripts**: Save debates as Markdown.
+- [ ] **PDF Export**: Nicely formatted transcript downloads.
 - [ ] **Multiplayer Mode**: Human vs AI debates.
 - [ ] **Local LLM Support**: Integration with Ollama for offline debates.
 

@@ -1,50 +1,73 @@
+# Full stack: Postgres, Redis, API, worker and the Caddy-served frontend.
+#   docker compose up -d --build
+# Database migrations run automatically when the api container starts.
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-ai_debates}
+  REDIS_URL: redis://redis:6379/0
+
 services:
-  # Database
   db:
+    # Keep the major version: upgrading requires migrating the data volume (pg_upgrade).
     image: postgres:15-alpine
     restart: always
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-ai_debates}
-    # In production, we don't expose DB port to public
-    # ports:
-    #   - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_debates}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_debates}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
-  # Redis (Queue + PubSub)
   redis:
     image: redis:7-alpine
     restart: always
-    # In production, we don't expose Redis port to public
-    # ports:
-    #   - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
-  # Backend API
   api:
     build: ./backend
     restart: always
-    # Production command with proxy headers
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"
     env_file:
       - .env
+    environment:
+      <<: *backend-env
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
-  # Worker (RQ)
   worker:
     build: ./backend
     restart: always
     command: python -m app.worker
     env_file:
       - .env
+    environment:
+      <<: *backend-env
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
-  # Frontend + Caddy Proxy
   frontend:
     container_name: ai-debates-frontend-1
     build:
@@ -56,8 +79,8 @@ services:
     ports:
       - "80:80"
     environment:
+      # Plain HTTP; TLS is terminated by the external Caddy in production (see docker-compose.prod.yml)
       - DOMAIN_NAME=:80
-      - VITE_API_URL=/api
     depends_on:
       - api
 

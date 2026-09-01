@@ -1,25 +1,28 @@
-import os
-import redis
-from redis import Redis
-from rq import Worker, Queue
-from typing import Optional
+"""RQ worker entrypoint: `python -m app.worker`."""
 
-listen = ['default']
+import logging
 
-redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+from rq import Queue, SimpleWorker, Worker
 
-try:
-    conn: Optional[Redis] = redis.from_url(redis_url)
-except Exception as e:
-    print(f"Error connecting to Redis: {e}")
-    conn = None
+from app.core.config import settings
+from app.core.logging import setup_logging
+from app.core.redis import get_sync_redis
+from app.services.queue_manager import QUEUE_NAME
 
-if __name__ == '__main__':
-    if conn:
-        # Create queues with explicit connection
-        queues = [Queue(name, connection=conn) for name in listen]
-        worker = Worker(queues, connection=conn)
-        print("Starting RQ worker...")
-        worker.work()
-    else:
-        print("Could not start worker due to missing Redis connection.")
+logger = logging.getLogger(__name__)
+
+
+def main() -> None:
+    setup_logging()
+    conn = get_sync_redis()
+    conn.ping()
+    queues = [Queue(QUEUE_NAME, connection=conn)]
+    # SimpleWorker runs jobs in-process (no fork). Handy on macOS for local dev.
+    worker_cls = SimpleWorker if settings.RQ_SIMPLE_WORKER else Worker
+    worker = worker_cls(queues, connection=conn)
+    logger.info("Starting %s on queue '%s'", worker_cls.__name__, QUEUE_NAME)
+    worker.work(with_scheduler=False)
+
+
+if __name__ == "__main__":
+    main()

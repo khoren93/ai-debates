@@ -1,17 +1,13 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../api/axios';
 import { ArrowLeft, Plus, ChevronDown, Volume2 } from 'lucide-react';
+import { createDebate } from '../api/debates';
+import { getCredits, listModels, validateModels } from '../api/models';
+import { getErrorMessage } from '../api/client';
+import type { DebateConfig, ModelInfo } from '../api/types';
+import { formatContext, formatPrice } from '../lib/format';
 import { TOPIC_TEMPLATES } from '../data/topics';
 import { STYLE_PRESETS } from '../data/styles';
-
-interface Model {
-  id: string;
-  name: string;
-  pricing: { prompt: string; completion: string; image: string; request: string };
-  context_length: number;
-  is_free: boolean;
-}
 
 const getLangCode = (langName: string) => {
     switch (langName) {
@@ -26,21 +22,7 @@ const getLangCode = (langName: string) => {
 
 const getAvatarUrl = (seed: string) => `https://api.dicebear.com/9.x/bottts-neutral/svg?seed=${seed}`;
 
-const formatPrice = (pricing: { prompt: string; completion: string }) => {
-    const c = parseFloat(pricing.completion) * 1000000;
-    return `$${c.toFixed(2)}`;
-};
-
-const formatContext = (length: number) => {
-    if (!length) return '?';
-    if (length >= 1000000) {
-        return `${Math.round(length / 1000000)}M`;
-    }
-    if (length >= 1000) {
-        return `${Math.round(length / 1000)}k`;
-    }
-    return `${length}`;
-};
+const randomSeed = () => Math.random().toString(36).substring(7);
 
 const CreateDebate = () => {
   const navigate = useNavigate();
@@ -53,11 +35,12 @@ const CreateDebate = () => {
   const [openStyleIdx, setOpenStyleIdx] = useState<number | null>(null);
   const styleRef = useRef<HTMLDivElement>(null);
 
-  const [models, setModels] = useState<Model[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [credits, setCredits] = useState<number | null>(null);
   const [customApiKey, setCustomApiKey] = useState('');
   const [customKeyCredits, setCustomKeyCredits] = useState<number | null>(null);
   const [checkingKey, setCheckingKey] = useState(false);
+  const [customKeyError, setCustomKeyError] = useState<string | null>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   // Check custom key credits
@@ -65,15 +48,18 @@ const CreateDebate = () => {
     const checkKey = async () => {
         if (!customApiKey || customApiKey.length < 10) {
             setCustomKeyCredits(null);
+            setCustomKeyError(null);
             return;
         }
         setCheckingKey(true);
         try {
-            const res = await api.get(`/models/credits?api_key=${customApiKey}`);
-            setCustomKeyCredits(res.data.credits);
+            const res = await getCredits(customApiKey);
+            setCustomKeyCredits(res.credits ?? 0);
+            setCustomKeyError(res.error);
         } catch (e) {
             console.error("Failed to check custom key credits", e);
             setCustomKeyCredits(0);
+            setCustomKeyError('Could not verify the key');
         } finally {
             setCheckingKey(false);
         }
@@ -87,17 +73,6 @@ const CreateDebate = () => {
       ? (customKeyCredits !== null && customKeyCredits <= 0) 
       : (credits !== null && credits <= 0);
 
-  useEffect(() => {
-    const loadVoices = () => {
-        const available = window.speechSynthesis.getVoices();
-        // Sort by name or lang
-        available.sort((a, b) => a.name.localeCompare(b.name));
-        setVoices(available);
-    };
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-    return () => { window.speechSynthesis.onvoiceschanged = null; };
-  }, []);
 
   const [settings, setSettings] = useState({
     topic: '',
@@ -107,13 +82,13 @@ const CreateDebate = () => {
     length_preset: 'very_short', // short, medium, long
     moderator_model: '',
     moderator_voice: '', // Added voice
-    moderator_avatar: Math.random().toString(36).substring(7),
+    moderator_avatar: randomSeed(),
     num_participants: 2, // 2-5
   });
 
   const [participants, setParticipants] = useState([
-      { name: 'Debater 1', model: '', voice: '', avatar: Math.random().toString(36).substring(7), prompt: 'You are a skilled debater. Argue in favor of the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 1 },
-      { name: 'Debater 2', model: '', voice: '', avatar: Math.random().toString(36).substring(7), prompt: 'You are a skilled debater. Argue against the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 2 }
+      { name: 'Debater 1', model: '', voice: '', avatar: randomSeed(), prompt: 'You are a skilled debater. Argue in favor of the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 1 },
+      { name: 'Debater 2', model: '', voice: '', avatar: randomSeed(), prompt: 'You are a skilled debater. Argue against the topic.\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.', position: 2 }
   ]);
 
 
@@ -134,23 +109,10 @@ const CreateDebate = () => {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        const [resModels, resCredits] = await Promise.all([
-            api.get('/models'),
-            api.get('/models/credits')
-        ]);
+        const [modelsList, creditsRes] = await Promise.all([listModels(), getCredits()]);
+        // null = unknown balance (do not lock paid models on a transient failure)
+        setCredits(creditsRes.credits);
 
-        const currentCredits = resCredits.data?.credits || 0;
-        setCredits(currentCredits);
-
-        // Backend returns { data: [...], timestamp: ... }
-        // Ensure modelsList is always handled as an array
-        let modelsList: Model[] = [];
-        if (resModels.data && Array.isArray(resModels.data.data)) {
-            modelsList = resModels.data.data;
-        } else if (Array.isArray(resModels.data)) {
-            modelsList = resModels.data;
-        }
-        
         // Sort: Free models first, then by name
         modelsList.sort((a, b) => {
             if (a.is_free && !b.is_free) return -1;
@@ -182,82 +144,74 @@ const CreateDebate = () => {
     fetchModels();
   }, []);
 
-  // Set default voices when they load or when language changes
+  // Pick voices matching the debate language for every participant whose voice doesn't match.
+  const applyVoiceDefaults = useCallback((available: SpeechSynthesisVoice[], language: string) => {
+      if (available.length === 0) return;
+      const langCode = getLangCode(language);
+      const langVoices = available.filter(v => v.lang.startsWith(langCode));
+      const fallbackVoices = langVoices.length > 0 ? langVoices : available;
+
+      setSettings(prev => {
+         // Keep the moderator voice if it matches the language; otherwise fall back to the browser default.
+         if (prev.moderator_voice === "") return prev;
+         const currentVoice = available.find(v => v.name === prev.moderator_voice);
+         if (currentVoice && currentVoice.lang.startsWith(langCode)) return prev;
+         return { ...prev, moderator_voice: "" };
+      });
+
+      setParticipants(prev => prev.map((p, idx) => {
+          const currentVoice = available.find(v => v.name === p.voice);
+          if (currentVoice && currentVoice.lang.startsWith(langCode)) return p;
+          // Prefer Samantha if available for English/default
+          const samantha = fallbackVoices.find(v => v.name === 'Samantha');
+          if (samantha) return { ...p, voice: samantha.name };
+          return { ...p, voice: fallbackVoices[(idx + 1) % fallbackVoices.length].name };
+      }));
+  }, []);
+
+  // Browser voices are an external system: subscribe to it and re-apply defaults when the language changes.
   useEffect(() => {
-      if (voices.length > 0) {
-          const langCode = getLangCode(settings.language);
-          const langVoices = voices.filter(v => v.lang.startsWith(langCode));
-          const fallbackVoices = langVoices.length > 0 ? langVoices : voices;
-
-          setSettings(prev => {
-             // If current voice matches language, keep it. Otherwise switch.
-             if (prev.moderator_voice === "") return prev;
-             const currentVoice = voices.find(v => v.name === prev.moderator_voice);
-             if (currentVoice && currentVoice.lang.startsWith(langCode)) return prev;
-
-             // Don't force a specific voice, let it stay default (empty string)
-             return { ...prev, moderator_voice: "" };
-          });
-
-          setParticipants(prev => prev.map((p, idx) => {
-              const currentVoice = voices.find(v => v.name === p.voice);
-              if (currentVoice && currentVoice.lang.startsWith(langCode)) return p;
-              
-              // Prefer Samantha if available for English/default
-              const samantha = fallbackVoices.find(v => v.name === 'Samantha');
-              if (samantha) return { ...p, voice: samantha.name };
-
-              const choice = fallbackVoices.length > 0 ? fallbackVoices[(idx + 1) % fallbackVoices.length] : voices[0];
-              return { ...p, voice: choice.name };
-          }));
-      }
-  }, [voices, settings.language]);
+    if (!('speechSynthesis' in window)) return;
+    const loadVoices = () => {
+        const available = [...window.speechSynthesis.getVoices()].sort((a, b) => a.name.localeCompare(b.name));
+        setVoices(available);
+        applyVoiceDefaults(available, settings.language);
+    };
+    loadVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+  }, [settings.language, applyVoiceDefaults]);
 
 
-  // Update participant count
-  useEffect(() => {
+  const handleParticipantCountChange = (newCount: number) => {
+     setSettings(prev => ({ ...prev, num_participants: newCount }));
      setParticipants(prev => {
-         const newCount = settings.num_participants;
          if (newCount === prev.length) return prev;
-         
-         if (newCount > prev.length) {
-             // Add participants
-             const added = [];
-             const defaultModelId = models.length > 0 ? (models.find(m => m.name.toLowerCase().includes('(free)')) || models[0]).id : '';
-             
-             const langCode = getLangCode(settings.language);
-             const langVoices = voices.filter(v => v.lang.startsWith(langCode));
-             const fallbackVoices = langVoices.length > 0 ? langVoices : voices;
+         if (newCount < prev.length) return prev.slice(0, newCount);
 
-             for (let i = prev.length + 1; i <= newCount; i++) {
-                 // Try to assign a voice
-                 let voiceName = '';
-                 if (voices.length > 0) {
-                     const samantha = fallbackVoices.find(v => v.name === 'Samantha');
-                     if (samantha) {
-                        voiceName = samantha.name;
-                     } else {
-                        const choice = fallbackVoices.length > 0 ? fallbackVoices[i % fallbackVoices.length] : voices[0];
-                        voiceName = choice.name;
-                     }
-                 }
+         const defaultModelId = models.length > 0 ? (models.find(m => m.is_free) || models[0]).id : '';
+         const langCode = getLangCode(settings.language);
+         const langVoices = voices.filter(v => v.lang.startsWith(langCode));
+         const fallbackVoices = langVoices.length > 0 ? langVoices : voices;
+         const samantha = fallbackVoices.find(v => v.name === 'Samantha');
 
-                 added.push({
-                     name: `Debater ${i}`,
-                     model: defaultModelId,
-                     voice: voiceName,
-                     avatar: `Debater${i}-${Math.random().toString(36).substring(7)}`,
-                     prompt: `You are a skilled debater. Provide a unique perspective on the topic (Position ${i}).\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.`,
-                     position: i
-                 });
-             }
-             return [...prev, ...added];
-         } else {
-             // Remove participants
-             return prev.slice(0, newCount);
+         const added = [];
+         for (let i = prev.length + 1; i <= newCount; i++) {
+             const voiceName = fallbackVoices.length > 0
+                 ? (samantha ?? fallbackVoices[i % fallbackVoices.length]).name
+                 : '';
+             added.push({
+                 name: `Debater ${i}`,
+                 model: defaultModelId,
+                 voice: voiceName,
+                 avatar: `Debater${i}-${randomSeed()}`,
+                 prompt: `You are a skilled debater. Provide a unique perspective on the topic (Position ${i}).\n\nStyle: Maintain a neutral, objective, and logical tone. Avoid emotional language and focus on facts.`,
+                 position: i
+             });
          }
+         return [...prev, ...added];
      });
-  }, [settings.num_participants, models, voices, settings.language]);
+  };
 
   const updateParticipant = (index: number, field: string, value: string) => {
       const newP = [...participants];
@@ -296,11 +250,6 @@ const CreateDebate = () => {
     e.preventDefault();
     setValidating(true);
 
-    // Determine if paid models are allowed
-    const isPaidLocked = customApiKey 
-        ? (customKeyCredits !== null && customKeyCredits <= 0) 
-        : (credits !== null && credits <= 0);
-
     try {
       // Determine effective models
       const defaultModModel = settings.moderator_model || (models.length > 0 ? models[0].id : '');
@@ -323,16 +272,13 @@ const CreateDebate = () => {
 
       // Validate Models
       if (modelIdsToValidate.length > 0) {
-          const valRes = await api.post('/models/validate', { 
-            model_ids: modelIdsToValidate,
-            api_key: customApiKey || undefined
-          });
-          const failures = valRes.data.results.filter((r: any) => r.status !== 'ok');
+          const results = await validateModels(modelIdsToValidate, customApiKey || undefined);
+          const failures = results.filter((r) => r.status !== 'ok');
           
           if (failures.length > 0) {
               let msg = "The following models are unresponsive:\n\n";
               
-              failures.forEach((f: any) => {
+              failures.forEach((f) => {
                   const m = models.find(md => md.id === f.model_id);
                   const name = m ? m.name : f.model_id;
                   const errorDetail = f.error || "Unknown connection error";
@@ -348,7 +294,7 @@ const CreateDebate = () => {
       }
     } catch (valErr) {
         console.error("Validation check failed", valErr);
-        alert("Failed to validate models connectivity. Please try again.");
+        alert(`Failed to validate model connectivity: ${getErrorMessage(valErr)}`);
         setValidating(false);
         return;
     }
@@ -359,7 +305,7 @@ const CreateDebate = () => {
       const defaultModModel = settings.moderator_model || (models.length > 0 ? models[0].id : '');
 
       // Construct payload
-      const payload = {
+      const payload: DebateConfig = {
         topic: settings.topic,
         description: settings.description,
         language: settings.language,
@@ -370,7 +316,7 @@ const CreateDebate = () => {
         participants: [
             // Moderator
             {
-                role: "moderator",
+                role: "moderator" as const,
                 model_id: defaultModModel,
                 display_name: "Moderator",
                 persona_custom: "You are an impartial debate moderator. Briefly introduce the next speaker and summarize the current state of the debate.",
@@ -379,7 +325,7 @@ const CreateDebate = () => {
             },
             // Dynamic Debaters
             ...participants.map(p => ({
-                role: "debater",
+                role: "debater" as const,
                 model_id: p.model,
                 display_name: p.name,
                 persona_custom: p.prompt,
@@ -389,11 +335,11 @@ const CreateDebate = () => {
         ]
       };
 
-      const res = await api.post('/debates', payload);
-      navigate(`/debate/${res.data.debate_id}`);
+      const res = await createDebate(payload);
+      navigate(`/debate/${res.debate_id}`);
     } catch (err) {
       console.error("Failed to create debate", err);
-      alert("Error creating debate");
+      alert(`Error creating debate: ${getErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -501,7 +447,7 @@ const CreateDebate = () => {
                   <select
                     className="w-full h-10 p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
                     value={settings.num_participants}
-                    onChange={e => setSettings({...settings, num_participants: parseInt(e.target.value)})}
+                    onChange={e => handleParticipantCountChange(parseInt(e.target.value))}
                   >
                     {[2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
                   </select>
@@ -532,7 +478,7 @@ const CreateDebate = () => {
                     />
                     <button
                         type="button"
-                        onClick={() => setSettings({...settings, moderator_avatar: Math.random().toString(36).substring(7)})}
+                        onClick={() => setSettings({...settings, moderator_avatar: randomSeed()})}
                         className="text-xs text-blue-600 hover:text-blue-800 underline"
                     >
                         Randomize
@@ -622,6 +568,7 @@ const CreateDebate = () => {
                     (customApiKey && customKeyCredits !== null) ? (customKeyCredits > 0 ? 'text-blue-600' : 'text-red-500') : 'text-gray-500'
                  }`}>
                     {checkingKey ? 'Checking key balance...' : 
+                     customKeyError ? `Key rejected: ${customKeyError}` :
                      (customApiKey && customKeyCredits !== null) ? 
                         (customKeyCredits > 0 ? `Custom Key Accepted. Credits: $${customKeyCredits.toFixed(2)}` : `Key has no credits ($0.00). Paid models locked.`) :
                         'Enter your own key to bypass system credit limits and access paid models.'}
@@ -655,7 +602,7 @@ const CreateDebate = () => {
                         />
                         <button 
                             type="button"
-                            onClick={() => updateParticipant(idx, 'avatar', Math.random().toString(36).substring(7))}
+                            onClick={() => updateParticipant(idx, 'avatar', randomSeed())}
                             className="text-xs text-blue-500 hover:text-blue-700 underline"
                         >
                             Randomize

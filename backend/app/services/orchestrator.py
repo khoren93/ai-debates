@@ -1,348 +1,390 @@
-import uuid
+"""RQ jobs that drive a debate: start -> turn* -> verdict -> finish.
+
+Runs in the worker process only. Uses a blocking SQLAlchemy engine because RQ
+jobs are synchronous; LLM streaming happens inside a short-lived asyncio loop.
+"""
+
 import asyncio
-from datetime import datetime, timezone
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from rq import Queue
-import redis
+import logging
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
-from app.models.models import Debate, Turn
+from app.core.redis import get_sync_redis, provider_key_key, stop_flag_key
+from app.models.models import Debate, Turn, utcnow
+from app.services import queue_manager
 from app.services.events import publish_event
-from app.services.prompt_builder import prompt_builder
-from app.services.openrouter_client import OpenRouterClient
+from app.services.openrouter_client import OpenRouterClient, OpenRouterError
+from app.services.prompt_builder import (
+    build_debater_messages,
+    build_moderator_messages,
+    build_verdict_messages,
+)
+from app.services.scheduler import ScheduledTurn, build_schedule, speaker_role_for
 
-# Sync DB setup for Worker
-SYNC_DB_URL = settings.DATABASE_URL.replace("postgresql+asyncpg", "postgresql")
-engine = create_engine(SYNC_DB_URL)
-SessionLocal = sessionmaker(bind=engine)
+logger = logging.getLogger(__name__)
 
-# Redis Queue for chaining
-redis_conn = redis.from_url(settings.REDIS_URL)
-q = Queue(connection=redis_conn)
+VERDICT_SPEAKER_NAME = "⚖️ Verdict"
+STOP_CHECK_EVERY_N_CHUNKS = 10
 
-# --- Jobs ---
+_SessionLocal: sessionmaker[Session] | None = None
 
-def start_debate_job(debate_id: str):
-    """
-    Job 1: Initialize debate
-    """
-    db = SessionLocal()
+
+def get_session() -> Session:
+    """Blocking DB session. The engine is created lazily so that forked RQ
+    work-horses never share a connection pool with the parent process."""
+    global _SessionLocal
+    if _SessionLocal is None:
+        engine = create_engine(settings.sync_database_url, poolclass=NullPool)
+        _SessionLocal = sessionmaker(bind=engine)
+    return _SessionLocal()
+
+
+# --- helpers ---------------------------------------------------------------
+
+
+@dataclass
+class GenerationResult:
+    text: str = ""
+    usage: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    stopped: bool = False
+
+
+def _normalize_usage(raw: dict[str, Any] | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    return {
+        "prompt_tokens": int(raw.get("prompt_tokens") or 0),
+        "completion_tokens": int(raw.get("completion_tokens") or 0),
+        "total_tokens": int(raw.get("total_tokens") or 0),
+        "cost": float(raw.get("cost") or 0.0),
+    }
+
+
+def _serialize_turn(turn: Turn) -> dict[str, Any]:
+    return {
+        "seq_index": turn.seq_index,
+        "round_id": turn.round_id,
+        "turn_type": turn.turn_type,
+        "speaker_role": speaker_role_for(turn.turn_type),
+        "speaker_name": turn.speaker_name,
+        "text": turn.text,
+        "error": turn.error,
+        "model_used": turn.model_used,
+        "usage": turn.usage_json or {},
+        "created_at": turn.created_at.isoformat() if turn.created_at else None,
+    }
+
+
+def _history(db: Session, debate_id: uuid.UUID) -> list[dict[str, Any]]:
+    turns = db.scalars(
+        select(Turn).where(Turn.debate_id == debate_id).order_by(Turn.seq_index)
+    ).all()
+    return [
+        {"speaker_name": t.speaker_name, "text": t.text, "turn_type": t.turn_type}
+        for t in turns
+        if t.text and t.text.strip()
+    ]
+
+
+def _compute_totals(db: Session, debate_id: uuid.UUID) -> dict[str, Any]:
+    turns = db.scalars(select(Turn).where(Turn.debate_id == debate_id)).all()
+    totals = {"tokens_in": 0, "tokens_out": 0, "cost": 0.0, "turns_count": len(turns)}
+    for t in turns:
+        usage = t.usage_json or {}
+        totals["tokens_in"] += int(usage.get("prompt_tokens") or 0)
+        totals["tokens_out"] += int(usage.get("completion_tokens") or 0)
+        totals["cost"] += float(usage.get("cost") or 0.0)
+    totals["cost"] = round(totals["cost"], 6)
+    return totals
+
+
+def _cleanup_keys(debate_id: str) -> None:
     try:
-        debate = db.query(Debate).filter(Debate.id == uuid.UUID(debate_id)).first()
+        get_sync_redis().delete(provider_key_key(debate_id), stop_flag_key(debate_id))
+    except Exception:
+        logger.warning("Failed to clean up Redis keys for debate %s", debate_id)
+
+
+def _provider_key(debate_id: str) -> str | None:
+    try:
+        value = get_sync_redis().get(provider_key_key(debate_id))
+    except Exception:
+        logger.warning("Failed to read provider key for debate %s", debate_id)
+        return None
+    if value is None:
+        return None
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _stop_requested(debate_id: str) -> bool:
+    try:
+        return bool(get_sync_redis().exists(stop_flag_key(debate_id)))
+    except Exception:
+        return False
+
+
+def _fail_debate(db: Session, debate: Debate, message: str) -> None:
+    logger.error("Debate %s failed: %s", debate.id, message)
+    debate.status = "error"
+    debate.error_message = message[:2000]
+    debate.ended_at = utcnow()
+    debate.totals_json = _compute_totals(db, debate.id)
+    db.commit()
+    _cleanup_keys(str(debate.id))
+    publish_event(str(debate.id), "debate_error", {"debate_id": str(debate.id), "message": message})
+
+
+def _finalize_stopped(db: Session, debate: Debate) -> None:
+    debate.status = "stopped"
+    debate.ended_at = debate.ended_at or utcnow()
+    debate.totals_json = _compute_totals(db, debate.id)
+    db.commit()
+    _cleanup_keys(str(debate.id))
+
+
+def _generate(
+    debate_id: str,
+    seq_index: int,
+    speaker_name: str,
+    model_id: str,
+    messages: list[dict[str, Any]],
+    api_key: str | None,
+) -> GenerationResult:
+    """Stream one LLM response, forwarding deltas to subscribers."""
+
+    async def run() -> GenerationResult:
+        client = OpenRouterClient()
+        result = GenerationResult()
+        chunks = 0
+        try:
+            async for chunk in client.stream_chat_completion(model_id, messages, api_key=api_key):
+                if chunk.usage:
+                    result.usage = _normalize_usage(chunk.usage)
+                if not chunk.delta:
+                    continue
+                result.text += chunk.delta
+                publish_event(
+                    debate_id,
+                    "turn_delta",
+                    {"seq_index": seq_index, "delta": chunk.delta, "speaker_name": speaker_name},
+                )
+                chunks += 1
+                if chunks % STOP_CHECK_EVERY_N_CHUNKS == 0 and _stop_requested(debate_id):
+                    result.stopped = True
+                    break
+        except OpenRouterError as e:
+            result.error = str(e)
+        except Exception as e:
+            logger.exception("Unexpected generation error for debate %s", debate_id)
+            result.error = f"Unexpected error: {e}"
+        return result
+
+    return asyncio.run(run())
+
+
+def _save_turn(
+    db: Session,
+    debate: Debate,
+    *,
+    seq_index: int,
+    round_id: str,
+    turn_type: str,
+    speaker_id: str,
+    speaker_name: str,
+    model_id: str,
+    result: GenerationResult,
+) -> Turn:
+    turn = Turn(
+        debate_id=debate.id,
+        seq_index=seq_index,
+        round_id=round_id,
+        turn_type=turn_type,
+        speaker_id=speaker_id,
+        speaker_name=speaker_name,
+        text=result.text,
+        error=result.error,
+        word_count=len(result.text.split()),
+        model_used=model_id,
+        usage_json=result.usage,
+    )
+    db.add(turn)
+    db.commit()
+    db.refresh(turn)
+    payload = _serialize_turn(turn)
+    publish_event(str(debate.id), "turn_error" if result.error else "turn_completed", payload)
+    if result.error:
+        logger.warning("Turn %s of debate %s failed: %s", seq_index, debate.id, result.error)
+    return turn
+
+
+# --- jobs ------------------------------------------------------------------
+
+
+def start_debate_job(debate_id: str) -> None:
+    with get_session() as db:
+        debate = db.get(Debate, uuid.UUID(debate_id))
         if not debate:
-            print(f"Debate {debate_id} not found")
+            logger.warning("Debate %s not found", debate_id)
+            return
+        if debate.status != "queued":
+            logger.info("Debate %s is %s, not starting", debate_id, debate.status)
             return
 
         debate.status = "running"
-        debate.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        debate.started_at = utcnow()
         db.commit()
-
-        # Notify
-        publish_event(debate_id, "debate_started", {
-            "debate_id": debate_id,
-            "status": "running"
-        })
-
-        # Start Chain: Turn 0
-        q.enqueue(
-            "app.services.orchestrator.process_turn_job",
-            debate_id=debate_id,
-            seq_index=0
-        )
-    finally:
-        db.close()
+        publish_event(debate_id, "debate_started", {"debate_id": debate_id, "status": "running"})
+        queue_manager.enqueue_turn(debate_id, 0)
 
 
-def process_turn_job(debate_id: str, seq_index: int):
-    """
-    Job 2: Process a single turn
-    """
-    db = SessionLocal()
-    try:
-        debate = db.query(Debate).filter(Debate.id == uuid.UUID(debate_id)).first()
-        if not debate or debate.status != "running":
-             # Stopped or Error
+def process_turn_job(debate_id: str, seq_index: int) -> None:
+    with get_session() as db:
+        debate = db.get(Debate, uuid.UUID(debate_id))
+        if not debate:
+            return
+        if debate.status == "stopped":
+            _finalize_stopped(db, debate)
+            return
+        if debate.status != "running":
             return
 
-        conf = debate.config_json
-        # 1. Determine Speaker & Round (Simplified Logic for MVP)
-        # Using a fixed mapped logic based on presets would go here.
-        # For MVP, let's just rotate debaters.
-        
-        participants = conf.get('participants', [])
-        debaters = [p for p in participants if p['role'] == 'debater']
-        moderator = next((p for p in participants if p['role'] == 'moderator'), None)
-        
-        # Determine Max Turns
-        # If num_rounds is specified: (num_rounds * 2 debaters) + maybe moderator intros?
-        # Let's simplify: 1 Round = Mod + Debater1 + Debater2
-        num_rounds = conf.get('num_rounds', 3)
-        turns_per_round = len(debaters) + 1 if moderator else len(debaters)
-        max_turns_total = num_rounds * turns_per_round
-        
-        if seq_index >= max_turns_total:
-             # Add Verdict Job here before finishing
-            q.enqueue("app.services.orchestrator.conduct_verdict_job", debate_id=debate_id, seq_index=seq_index)
+        try:
+            conf: dict[str, Any] = debate.config_json or {}
+            participants: list[dict[str, Any]] = conf.get("participants", [])
+            schedule = build_schedule(participants, int(conf.get("num_rounds") or 1))
+
+            if seq_index >= len(schedule):
+                queue_manager.enqueue_verdict(debate_id, seq_index)
+                return
+
+            turn: ScheduledTurn = schedule[seq_index]
+            speaker = participants[turn.speaker_index]
+            speaker_name = speaker.get("display_name") or (
+                "Moderator" if turn.is_moderator else f"Debater {turn.speaker_index}"
+            )
+            model_id = speaker.get("model_id") or settings.DEFAULT_MODEL_ID
+            history = _history(db, debate.id)
+            build = build_moderator_messages if turn.is_moderator else build_debater_messages
+            messages = build(conf, speaker, turn, history)
+
+            publish_event(
+                debate_id,
+                "turn_started",
+                {
+                    "seq_index": seq_index,
+                    "speaker_name": speaker_name,
+                    "speaker_role": speaker_role_for(turn.turn_type),
+                    "turn_type": turn.turn_type,
+                    "round_id": turn.round_id,
+                },
+            )
+
+            result = _generate(
+                debate_id, seq_index, speaker_name, model_id, messages, _provider_key(debate_id)
+            )
+            _save_turn(
+                db,
+                debate,
+                seq_index=seq_index,
+                round_id=turn.round_id,
+                turn_type=turn.turn_type,
+                speaker_id=f"participant_{turn.speaker_index}",
+                speaker_name=speaker_name,
+                model_id=model_id,
+                result=result,
+            )
+
+            if result.stopped or _stop_requested(debate_id):
+                _finalize_stopped(db, debate)
+                return
+            queue_manager.enqueue_turn(debate_id, seq_index + 1)
+
+        except Exception as e:
+            logger.exception("Turn %s of debate %s crashed", seq_index, debate_id)
+            db.rollback()
+            _fail_debate(db, debate, f"Turn {seq_index} failed: {e}")
+
+
+def conduct_verdict_job(debate_id: str, seq_index: int) -> None:
+    with get_session() as db:
+        debate = db.get(Debate, uuid.UUID(debate_id))
+        if not debate:
+            return
+        if debate.status == "stopped":
+            _finalize_stopped(db, debate)
+            return
+        if debate.status != "running":
             return
 
-        # Simple Round Robin: Mod -> D1 -> D2 -> Mod...
-        cycle_len = len(debaters) + (1 if moderator else 0)
-        pos_in_cycle = seq_index % cycle_len
-        
-        if moderator and pos_in_cycle == 0:
-            speaker = moderator
-            turn_type = "moderator_comment"
-        else:
-            # debater index
-            # if mod exists, debaters start at index 1. so pos_in_cycle 1 -> debater 0
-            d_idx = (pos_in_cycle - 1) if moderator else pos_in_cycle
-            speaker = debaters[d_idx]
-            turn_type = "argument"
+        try:
+            conf: dict[str, Any] = debate.config_json or {}
+            participants: list[dict[str, Any]] = conf.get("participants", [])
+            moderator = next((p for p in participants if p.get("role") == "moderator"), None)
+            model_id = (moderator or {}).get("model_id") or settings.DEFAULT_MODEL_ID
 
-        # 2. Publish Start Turn
-        publish_event(debate_id, "turn_started", {
-            "seq_index": seq_index,
-            "speaker_name": speaker['display_name']
-        })
+            publish_event(
+                debate_id,
+                "turn_started",
+                {
+                    "seq_index": seq_index,
+                    "speaker_name": VERDICT_SPEAKER_NAME,
+                    "speaker_role": "moderator",
+                    "turn_type": "verdict",
+                    "round_id": "verdict",
+                },
+            )
+            messages = build_verdict_messages(conf, _history(db, debate.id))
+            result = _generate(
+                debate_id,
+                seq_index,
+                VERDICT_SPEAKER_NAME,
+                model_id,
+                messages,
+                _provider_key(debate_id),
+            )
+            _save_turn(
+                db,
+                debate,
+                seq_index=seq_index,
+                round_id="verdict",
+                turn_type="verdict",
+                speaker_id="judge",
+                speaker_name=VERDICT_SPEAKER_NAME,
+                model_id=model_id,
+                result=result,
+            )
+            queue_manager.enqueue_finish(debate_id)
+        except Exception as e:
+            logger.exception("Verdict for debate %s crashed", debate_id)
+            db.rollback()
+            _fail_debate(db, debate, f"Verdict failed: {e}")
 
-        # 3. Build Prompt (Mocking context fetch)
-        # last_turns = db.query(Turn)... limit(5)
-        # For now empty context
-        system_prompt = prompt_builder.build_system_prompt(
-            speaker['role'], 
-            speaker.get('persona_custom', 'Standard'), 
-            conf.get('intensity', 5),
-            conf.get('language', 'English')
-        )
 
-        # Handling length_preset
-        length_preset = conf.get('length_preset', 'medium')
-        length_map = {
-            'very_short': 'Keep your response very short and concise, around 50 words.',
-            'short': 'Keep your response short, around 100 words.',
-            'medium': 'Keep your response medium length, around 250 words.',
-            'long': 'You can provide a detailed response, around 500 words or more.'
-        }
-        length_instruction = length_map.get(length_preset, length_map['medium'])
-        system_prompt += f"\n\n{length_instruction}"
-        
-        # 4. Generate - Real OpenRouter Call
-        full_text = ""
-        
-        # Build Context (History)
-        prev_turns = db.query(Turn).filter(Turn.debate_id == uuid.UUID(debate_id)).order_by(Turn.seq_index).all()
-        history_str = ""
-        for t in prev_turns:
-            history_str += f"{t.speaker_name}: {t.text}\n\n"
-            
-        user_content = f"The debate topic is: {conf.get('topic')}. \n"
-        if conf.get('description'):
-            user_content += f"Context: {conf.get('description')}\n"
-            
-        # Add Participants Info
-        user_content += "\nParticipants:\n"
-        for p in participants:
-             user_content += f"- {p.get('display_name')} ({p.get('role')})\n"
-        
-        user_content += f"\nDebate History:\n{history_str}\n"
-        user_content += f"Now it is your turn, {speaker['display_name']}. Please provide your argument."
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ]
-        
-        client = OpenRouterClient()
-        
-        async def run_generation():
-            text_accumulator = ""
-            try:
-                # Use model from speaker config, fallback to free model
-                model_id = speaker.get('model_id') or "google/gemini-2.0-flash-exp:free"
-                # Check for BYOK API Key potentially in debate config
-                user_api_key = conf.get('user_provider_key') 
-                
-                async for chunk in client.create_chat_completion(model_id, messages, api_key=str(user_api_key) if user_api_key else None):
-                    text_accumulator += chunk
-                    # Publish delta
-                    publish_event(debate_id, "turn_delta", {
-                        "seq_index": seq_index,
-                        "delta": chunk,
-                        "speaker_name": speaker['display_name']
-                    })
-            except Exception as ex:
-                print(f"LLM Generation Error: {ex}")
-                text_accumulator += f" [Error generating response: {ex}]"
-                publish_event(debate_id, "turn_delta", {"seq_index": seq_index, "delta": f" [Error: {ex}]"})
-            return text_accumulator
+def finish_debate_job(debate_id: str) -> None:
+    with get_session() as db:
+        debate = db.get(Debate, uuid.UUID(debate_id))
+        if not debate:
+            return
+        if debate.status == "stopped":
+            _finalize_stopped(db, debate)
+            return
+        if debate.status != "running":
+            return
 
-        full_text = asyncio.run(run_generation())
-
-        # 5. Save Turn
-        new_turn = Turn(
-            debate_id=uuid.UUID(debate_id),
-            seq_index=seq_index,
-            round_id="round_1", # placeholder
-            turn_type=turn_type,
-            speaker_id=speaker.get('model_id'),
-            speaker_name=speaker['display_name'],
-            text=full_text,
-            word_count=len(full_text.split()),
-            model_used=speaker.get('model_id', 'unknown')
-        )
-        db.add(new_turn)
+        debate.status = "completed"
+        debate.ended_at = utcnow()
+        debate.totals_json = _compute_totals(db, debate.id)
         db.commit()
-
-        publish_event(debate_id, "turn_completed", {
-            "seq_index": seq_index,
-            "text": full_text,
-            "speaker_name": speaker['display_name']
-        })
-
-        # 6. Next Job
-        q.enqueue(
-            "app.services.orchestrator.process_turn_job",
-            debate_id=debate_id,
-            seq_index=seq_index + 1
+        _cleanup_keys(debate_id)
+        publish_event(
+            debate_id,
+            "debate_completed",
+            {"debate_id": debate_id, "status": "completed", "totals": debate.totals_json},
         )
-        
-    except Exception as e:
-        print(f"Error in turn {seq_index}: {e}")
-        # Optionally fail debate
-    finally:
-        db.close()
-
-
-def conduct_verdict_job(debate_id: str, seq_index: int):
-    """
-    Job 2.5: Generate Final Verdict (Judge/Moderator)
-    """
-    db = SessionLocal()
-    try:
-        debate = db.query(Debate).filter(Debate.id == uuid.UUID(debate_id)).first()
-        if not debate: return
-
-        conf = debate.config_json
-        # Use moderator as judge
-        moderator = next((p for p in conf.get('participants', []) if p['role'] == 'moderator'), None)
-        if not moderator:
-            # Fallback if no moderator found
-            moderator = {
-                "role": "moderator",
-                "display_name": "AI Judge",
-                "model_id": "google/gemini-2.0-flash-exp:free" 
-            }
-        
-        publish_event(debate_id, "turn_started", {
-            "seq_index": seq_index,
-            "speaker_name": "⚖️ Moderator (Verdict)"
-        })
-
-        # Build Prompt for Verdict
-        language = conf.get('language', 'English')
-        
-        system_prompt = f"""You are an expert Debate Judge. 
-        Your task is to analyze the debate history provided by the user.
-        
-        Strictly follow this structure in your response (use Markdown):
-        1. **Winner**: Declare the winner (or a draw) based on argument strength, logic, and persuasion.
-        2. **Analysis**: Briefly analyze the performance of each participant.
-        3. **Key Arguments**: Highlight the strongest points made.
-        4. **Logical Fallacies**: Point out any logical errors or weak arguments.
-        
-        Output Language: {language}
-        Style: Objective, Professional, and Analytical.
-        FORMATTING: You MUST use bolding, lists, and headers.
-        """
-
-        # Build Context (History)
-        prev_turns = db.query(Turn).filter(Turn.debate_id == uuid.UUID(debate_id)).order_by(Turn.seq_index).all()
-        history_str = ""
-        for t in prev_turns:
-            history_str += f"{t.speaker_name}: {t.text}\n\n"
-            
-        user_content = f"The debate topic was: {conf.get('topic')}. \n"
-        if conf.get('description'):
-            user_content += f"Context: {conf.get('description')}\n"
-        
-        user_content += f"\nFull Debate Transcript:\n{history_str}\n"
-        user_content += f"Please provide your final verdict now."
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ]
-        
-        client = OpenRouterClient()
-        full_text = ""
-        
-        async def run_generation():
-            text_accumulator = ""
-            try:
-                model_id = moderator.get('model_id') or "google/gemini-2.0-flash-exp:free"
-                user_api_key = conf.get('user_provider_key')
-                async for chunk in client.create_chat_completion(model_id, messages, api_key=str(user_api_key) if user_api_key else None):
-                    text_accumulator += chunk
-                    publish_event(debate_id, "turn_delta", {
-                        "seq_index": seq_index,
-                        "delta": chunk,
-                        "speaker_name": "⚖️ Moderator (Verdict)"
-                    })
-            except Exception as ex:
-                print(f"Verdict Generation Error: {ex}")
-                text_accumulator += f" [Error: {ex}]"
-            return text_accumulator
-
-        full_text = asyncio.run(run_generation())
-
-        # Save Verdict Turn
-        new_turn = Turn(
-            debate_id=uuid.UUID(debate_id),
-            seq_index=seq_index,
-            round_id="verdict",
-            turn_type="verdict",
-            speaker_id=moderator.get('model_id'),
-            speaker_name="⚖️ Moderator (Verdict)",
-            text=full_text,
-            word_count=len(full_text.split()),
-            model_used=moderator.get('model_id', 'unknown')
-        )
-        db.add(new_turn)
-        db.commit()
-
-        publish_event(debate_id, "turn_completed", {
-            "seq_index": seq_index,
-            "text": full_text,
-            "speaker_name": "⚖️ Moderator (Verdict)"
-        })
-
-        # Finally, finish debate
-        q.enqueue("app.services.orchestrator.finish_debate_job", debate_id=debate_id)
-
-    except Exception as e:
-        print(f"Verdict Job Error: {e}")
-        # Ensure we still close the debate if judge fails
-        q.enqueue("app.services.orchestrator.finish_debate_job", debate_id=debate_id)
-    finally:
-        db.close()
-
-def finish_debate_job(debate_id: str):
-    """
-    Job 3: Cleanup
-    """
-    db = SessionLocal()
-    try:
-        debate = db.query(Debate).filter(Debate.id == uuid.UUID(debate_id)).first()
-        if debate:
-            debate.status = "completed"
-            debate.ended_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            db.commit()
-            
-            publish_event(debate_id, "debate_completed", {
-                "debate_id": debate_id
-            })
-    finally:
-        db.close()
-
-from datetime import datetime # Late import fix

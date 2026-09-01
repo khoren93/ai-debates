@@ -1,3 +1,9 @@
 {
+  "include": ["backend/app", "backend/tests"],
+  "extraPaths": ["backend"],
+  "venvPath": "backend",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard",
   "reportUnknownMemberType": "none"
 }

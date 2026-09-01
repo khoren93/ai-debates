@@ -1,31 +1,20 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from collections.abc import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from app.core.config import settings
-from app.models.base import Base
-# Import all models so that Base has them registered
-from app.models import models
+from app.models import models as _models  # noqa: F401  (registers ORM models)
 
-# Avoid unused import error (models is used for side-effects)
-_ = models
+engine = create_async_engine(settings.DATABASE_URL, echo=False, pool_pre_ping=True)
 
-# Create async engine
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,  # Set True for SQL logs
-    future=True
-)
-
-# Create session factory
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
-    autoflush=False
+    autoflush=False,
 )
 
-# Dependency for API endpoints
-async def get_db():
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+        yield session

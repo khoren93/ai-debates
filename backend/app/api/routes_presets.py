@@ -1,11 +1,13 @@
-from typing import List, Dict, Any
+from typing import Any
+
 from fastapi import APIRouter
+
 from app.schemas.schemas import Preset
 
 router = APIRouter()
 
 # Simple static presets for MVP
-PRESETS_DB: List[Dict[str, Any]] = [
+PRESETS_DB: list[dict[str, Any]] = [
     {
         "id": "classic_v1",
         "name": "Classic Debate (6 Rounds)",
@@ -17,9 +19,9 @@ PRESETS_DB: List[Dict[str, Any]] = [
                 {"type": "rebuttal", "round_index": 2, "speakers": "all"},
                 {"type": "rebuttal", "round_index": 3, "speakers": "all"},
                 {"type": "closing", "round_index": 4, "speakers": "all"},
-                {"type": "moderator_outro", "round_index": 5}
+                {"type": "moderator_outro", "round_index": 5},
             ]
-        }
+        },
     },
     {
         "id": "blitz_v1",
@@ -27,16 +29,17 @@ PRESETS_DB: List[Dict[str, Any]] = [
         "description": "Fast paced: Opening, Rebuttal, Closing.",
         "preset_json": {
             "rounds": [
-                 {"type": "moderator_intro", "round_index": 0},
-                 {"type": "opening", "round_index": 1, "speakers": "all"},
-                 {"type": "closing", "round_index": 2, "speakers": "all"}
+                {"type": "moderator_intro", "round_index": 0},
+                {"type": "opening", "round_index": 1, "speakers": "all"},
+                {"type": "closing", "round_index": 2, "speakers": "all"},
             ]
-        }
-    }
+        },
+    },
 ]
 
-@router.get("", response_model=List[Preset])
-def get_presets() -> List[Dict[str, Any]]:
+
+@router.get("", response_model=list[Preset])
+def get_presets() -> list[dict[str, Any]]:
     """
     Get list of available debate presets.
     """

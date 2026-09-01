@@ -1,266 +1,294 @@
-import time
-import httpx
+"""Thin async client for the OpenRouter chat completions API."""
+
 import json
-from typing import List, Dict, Any, AsyncGenerator, Tuple, Optional
+import logging
+import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
+Message = dict[str, Any]
+
+
+class OpenRouterError(Exception):
+    """A failed OpenRouter request with a human-readable message."""
+
+    def __init__(
+        self, message: str, status_code: int | None = None, provider: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.provider = provider
+
+    def __str__(self) -> str:
+        text = self.message
+        if self.status_code:
+            text = f"HTTP {self.status_code}: {text}"
+        if self.provider:
+            text = f"{text} (provider: {self.provider})"
+        return text
+
+
+@dataclass
+class StreamChunk:
+    delta: str = ""
+    usage: dict[str, Any] | None = None
+
+
+def error_from_payload(payload: Any, status_code: int | None = None) -> OpenRouterError:
+    """Build an OpenRouterError from a parsed error body ({"error": {...}})."""
+    message = f"Request failed with status {status_code}" if status_code else "Request failed"
+    provider: str | None = None
+    err = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(err, dict):
+        message = str(err.get("message") or message)
+        meta = err.get("metadata")
+        if isinstance(meta, dict):
+            provider = meta.get("provider_name") or None
+            raw = meta.get("raw")
+            if isinstance(raw, str) and raw and raw not in message and len(raw) <= 400:
+                message = f"{message} — {raw}"
+    elif isinstance(err, str) and err:
+        message = err
+    return OpenRouterError(message, status_code=status_code, provider=provider)
+
+
+def parse_error_body(body: bytes | str, status_code: int | None = None) -> OpenRouterError:
+    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        snippet = text.strip()[:300] or "empty response body"
+        return OpenRouterError(snippet, status_code=status_code)
+    return error_from_payload(payload, status_code)
+
+
+def merge_system_prompt(messages: list[Message]) -> list[Message]:
+    """Fold system messages into the first user message.
+
+    Some providers reject the system role with HTTP 400; this is the fallback format.
+    """
+    system_content = "\n".join(
+        str(m.get("content", "")) for m in messages if m.get("role") == "system"
+    )
+    non_system = [m for m in messages if m.get("role") != "system"]
+    if not system_content:
+        return list(messages)
+    if not non_system:
+        return [{"role": "user", "content": system_content}]
+    first_user_idx = next((i for i, m in enumerate(non_system) if m.get("role") == "user"), None)
+    if first_user_idx is None:
+        return [{"role": "user", "content": system_content}, *non_system]
+    merged = dict(non_system[first_user_idx])
+    merged["content"] = f"{system_content}\n\n{merged.get('content', '')}"
+    non_system[first_user_idx] = merged
+    return non_system
+
+
+def _iter_sse_data(line: str) -> str | None:
+    """Return the JSON payload of an SSE `data:` line, or None for comments/blank lines."""
+    if not line.startswith("data:"):
+        return None
+    return line[5:].strip()
+
+
 class OpenRouterClient:
-    BASE_URL = "https://openrouter.ai/api/v1"
-    
-    def __init__(self):
-        self._models_cache: List[Dict[str, Any]] = []
-        self._cache_time = 0
-        self._cache_ttl = 3600  # 1 hour
-    
-    async def create_chat_completion(self, model: str, messages: List[Dict[str, Any]], api_key: Optional[str] = None) -> AsyncGenerator[str, None]:
-        """
-        Stream chat completion from OpenRouter.
-        Yields content text chunks.
-        """
-        key = api_key or settings.OPENROUTER_API_KEY
-        headers = {
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self._transport = transport
+        self._models_cache: list[dict[str, Any]] = []
+        self._cache_time = 0.0
+
+    # --- helpers ---------------------------------------------------------
+
+    @property
+    def base_url(self) -> str:
+        return settings.OPENROUTER_BASE_URL.rstrip("/")
+
+    def _headers(self, api_key: str | None) -> dict[str, str]:
+        key = api_key or settings.OPENROUTER_API_KEY or ""
+        return {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "HTTP-Referer": settings.SITE_URL,
             "X-Title": settings.PROJECT_NAME,
         }
-        
-        # Prepare attempts mechanism
-        # Some models (especially on Parasail) fail with System prompts (Error 400).
-        # We try standard first, then fallback to merged system prompt.
-        
-        attempts = ["standard"]
-        # Check if we have a system prompt to potentially merge
-        if any(m.get('role') == 'system' for m in messages):
-            attempts.append("merged_system")
-            
-        # last_error = None
-        
-        for attempt in attempts:
-            current_messages: List[Dict[str, Any]] = messages
-            if attempt == "merged_system":
-                # Merge logic: Prepend system content to first user message
-                system_content = "\n".join([str(m.get('content', '')) for m in messages if m.get('role') == 'system'])
-                non_system: List[Dict[str, Any]] = [m for m in messages if m.get('role') != 'system']
-                if not non_system:
-                    # Weird case: only system?
-                    current_messages = [{"role": "user", "content": system_content}]
-                else:
-                    # Find first user message
-                    first_user_idx = next((i for i, m in enumerate(non_system) if m.get('role') == 'user'), -1)
-                    if first_user_idx >= 0:
-                        non_system[first_user_idx] = non_system[first_user_idx].copy()
-                        non_system[first_user_idx]['content'] = f"{system_content}\n\n{non_system[first_user_idx].get('content')}"
-                        current_messages = non_system
-                    else:
-                        # No user message? Prepend one.
-                        current_messages = [{"role": "user", "content": system_content}] + non_system
 
-            payload: Dict[str, Any] = {
+    def _client(self, read_timeout: float | None = None) -> httpx.AsyncClient:
+        timeout = httpx.Timeout(
+            connect=settings.LLM_CONNECT_TIMEOUT,
+            read=read_timeout or settings.LLM_READ_TIMEOUT,
+            write=settings.LLM_CONNECT_TIMEOUT,
+            pool=settings.LLM_CONNECT_TIMEOUT,
+        )
+        return httpx.AsyncClient(timeout=timeout, transport=self._transport)
+
+    # --- chat completions ------------------------------------------------
+
+    async def stream_chat_completion(
+        self,
+        model: str,
+        messages: list[Message],
+        api_key: str | None = None,
+        max_tokens: int | None = None,
+        read_timeout: float | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream a chat completion, yielding text deltas and (last) usage info.
+
+        If the provider rejects the request with HTTP 400 and a system prompt was
+        present, the request is retried once with the system prompt merged into
+        the first user message.
+        """
+        attempts = ["standard"]
+        if any(m.get("role") == "system" for m in messages):
+            attempts.append("merged_system")
+
+        headers = self._headers(api_key)
+        for attempt in attempts:
+            current = messages if attempt == "standard" else merge_system_prompt(messages)
+            payload: dict[str, Any] = {
                 "model": model,
-                "messages": current_messages,
-                "stream": True 
+                "messages": current,
+                "stream": True,
+                "usage": {"include": True},
             }
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
 
             try:
-                # print(f"[OpenRouter] Requesting {model} with attempt {attempt}...")
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    async with client.stream("POST", f"{self.BASE_URL}/chat/completions", json=payload, headers=headers) as response:
-                        if response.status_code != 200:
-                            err_text = await response.aread()
-                            err_decoded = err_text.decode('utf-8', errors='replace')
-                            print(f"--- [OPENROUTER ERROR START] ---")
-                            print(f"Model: {model}")
-                            print(f"Status: {response.status_code}")
-                            print(f"Response Body: {err_decoded}")
-                            print(f"--- [OPENROUTER ERROR END] ---")
-                            
-                            # If it's a 400 error and we haven't tried merging yet, loop continue
-                            if response.status_code == 400 and attempt == "standard" and "merged_system" in attempts:
-                                print(f"OpenRouter 400 Error for {model}, retrying with merged system prompt...")
-                                # last_error = Exception(...) # suppressed
-                                continue
-                            
-                            raise Exception(f"OpenRouter Error {response.status_code}: {err_text.decode('utf-8', errors='replace')}")
-
-                        async for line in response.aiter_lines():
-                            if line.strip().startswith("data: "):
-                                data_str = line.strip()[6:]
-                                if data_str == "[DONE]":
-                                    break
-                                try:
-                                    chunk = json.loads(data_str)
-                                    delta = chunk["choices"][0].get("delta", {}).get("content", "")
-                                    if delta:
-                                        yield delta
-                                except json.JSONDecodeError:
-                                    continue
-                            # else:
-                                # if line.strip():
-                                    # print(f"[OpenRouter] Non-SSE line from {model}: {line}")
-
-                # If we successfully streamed, return (break loop)
-                return 
-            except Exception as e:
-                print(f"[OpenRouter] Attempt '{attempt}' failed for model {model}: {e}")
-                # last_error = e # suppressed
-                # Only suppress and retry if we have retries left and it was potentially a format issue
-                if attempt == "standard" and "merged_system" in attempts:
-                    continue
-                raise e # Re-raise if final attempt
-
-    async def validate_model(self, model: str, api_key: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-        """
-        Quickly validate if a model is responding by asking it to say 'pong'.
-        Returns (True, None) if successful, (False, error_message) otherwise.
-        """
-        key = api_key or settings.OPENROUTER_API_KEY
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:3000",
-            "X-Title": settings.PROJECT_NAME,
-        }
-        
-        # Use stream=True to match production behavior
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": [{"role": "user", "content": "say pong"}],
-            "max_tokens": 20, 
-            "stream": True,
-            "provider": {"ignore": ["Hyperbolic"]} # Optional: Avoid providers that might have strict limits if needed
-        }
-
-        try:
-            # Increased timeout to 30s for slow/cold models
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                async with client.stream("POST", f"{self.BASE_URL}/chat/completions", json=payload, headers=headers) as response:
+                async with (
+                    self._client(read_timeout) as client,
+                    client.stream(
+                        "POST", f"{self.base_url}/chat/completions", json=payload, headers=headers
+                    ) as response,
+                ):
                     if response.status_code != 200:
-                        # Ensure we consume the error to avoid hanging
-                        err_text = await response.aread()
-                        err_str = err_text.decode('utf-8', errors='replace')
-                        
-                        # Try to parse nice message
-                        try:
-                            err_json = json.loads(err_str)
-                            if "error" in err_json:
-                                error_obj = err_json["error"]
-                                # Check metadata.raw first for more detail if message is generic or just to be safe
-                                if "metadata" in error_obj and "raw" in error_obj["metadata"]:
-                                    err_str = error_obj["metadata"]["raw"]
-                                elif "message" in error_obj:
-                                    err_str = error_obj["message"]
-                        except:
-                            pass
-                        
-                        # print(f"[OpenRouter] Validation Error {response.status_code} for {model}: {err_str}")
-                        print(f"[OpenRouter] Validation Error {response.status_code} for {model}: {err_str}")
-                        return False, err_str
+                        body = await response.aread()
+                        err = parse_error_body(body, response.status_code)
+                        if response.status_code == 400 and attempt != attempts[-1]:
+                            logger.warning(
+                                "OpenRouter 400 for %s (%s); retrying with merged system prompt",
+                                model,
+                                err.message,
+                            )
+                            continue
+                        logger.warning("OpenRouter error for %s: %s", model, err)
+                        raise err
 
-                    # Check if we can get at least one chunk of data
                     async for line in response.aiter_lines():
-                        if line.strip().startswith("data: "):
-                            data_str = line.strip()[6:]
-                            if data_str == "[DONE]":
-                                break # If we got here, it's valid
-                            
-                            # Check for Error response in data stream (OpenRouter sometimes sends json error instead of SSE)
-                            # But usually strictly SSE format "data: {...}"
-                            
-                            try:
-                                chunk = json.loads(data_str)
-                                # Just need one valid chunk to confirm auth and connection
-                                if "choices" in chunk:
-                                    return True, None
-                                # Some error chunks might look different
-                                if "error" in chunk:
-                                    msg = chunk.get('error', {}).get('message', "Unknown SSE Error")
-                                    return False, msg
-                            except:
-                                continue
-                
-                    # The loop might finish without returning True if only keep-alives or empty?
-                    # But usually we hit [DONE] or a chunk.
-                    return True, None
+                        data = _iter_sse_data(line)
+                        if data is None:
+                            continue
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(chunk, dict):
+                            continue
+                        if chunk.get("error"):
+                            # Providers can fail mid-stream with a 200 status.
+                            raise error_from_payload(chunk)
+                        choices = chunk.get("choices") or []
+                        delta = ""
+                        if choices:
+                            delta = (choices[0].get("delta") or {}).get("content") or ""
+                        usage = chunk.get("usage")
+                        if delta or usage:
+                            yield StreamChunk(delta=delta, usage=usage)
+                return
+            except httpx.TimeoutException as e:
+                raise OpenRouterError(f"Timed out waiting for {model}") from e
+            except httpx.HTTPError as e:
+                raise OpenRouterError(f"Connection error: {e}") from e
 
-        except httpx.TimeoutException:
-            print(f"[OpenRouter] Timeout validating {model}")
-            return False, "Connection timed out (30s limit)"
-        except Exception as e:
-            import traceback
-            print(f"[OpenRouter] Validation EXCEPTION for {model}: {e}")
-            traceback.print_exc()
+    async def validate_model(
+        self, model: str, api_key: str | None = None
+    ) -> tuple[bool, str | None]:
+        """Send a tiny prompt to confirm the model responds. Returns (ok, error)."""
+        messages = [{"role": "user", "content": "Reply with the single word: pong"}]
+        try:
+            async for _chunk in self.stream_chat_completion(
+                model, messages, api_key=api_key, max_tokens=20, read_timeout=30.0
+            ):
+                return True, None
+            # Stream ended without content; still a successful round-trip.
+            return True, None
+        except OpenRouterError as e:
+            return False, str(e)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.exception("Unexpected error validating %s", model)
             return False, str(e)
 
+    # --- account ---------------------------------------------------------
 
-    async def get_credits(self, api_key: Optional[str] = None) -> float:
-        """
-        Get current account credits.
-        """
-        key = api_key or settings.OPENROUTER_API_KEY
-        headers = {
-            "Authorization": f"Bearer {key}",
-        }
+    async def get_credits(self, api_key: str | None = None) -> tuple[float | None, str | None]:
+        """Return (remaining credits, error). Credits are None when unknown."""
+        if not (api_key or settings.OPENROUTER_API_KEY):
+            return None, "No API key configured"
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.BASE_URL}/credits", headers=headers)
-                if response.status_code == 200:
-                    data = response.json()
-                    return float(data.get("data", {}).get("total_credits", 0))
-                return 0.0
-        except Exception as e:
-            print(f"Error fetching credits: {e}")
-            return 0.0
+            async with self._client(read_timeout=15.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/credits", headers=self._headers(api_key)
+                )
+        except httpx.HTTPError as e:
+            logger.warning("Failed to fetch credits: %s", e)
+            return None, "Could not reach OpenRouter"
+        if response.status_code != 200:
+            err = parse_error_body(response.content, response.status_code)
+            return None, err.message
+        data = response.json().get("data", {})
+        total = float(data.get("total_credits", 0) or 0)
+        used = float(data.get("total_usage", 0) or 0)
+        return round(total - used, 6), None
 
-    async def get_models(self) -> List[Dict[str, Any]]:
-        """
-        Fetch models from OpenRouter with simple caching.
-        Enriches data with 'is_free' flag.
-        """
-        current_time = time.time()
-        
-        # Return cached if valid
-        if self._models_cache and (current_time - self._cache_time < self._cache_ttl):
+    async def get_models(self) -> list[dict[str, Any]]:
+        """Fetch the model catalogue, cached for MODELS_CACHE_TTL seconds."""
+        now = time.time()
+        if self._models_cache and (now - self._cache_time < settings.MODELS_CACHE_TTL):
             return self._models_cache
-            
-        async with httpx.AsyncClient() as client:
-            try:
-                # No auth needed for listing models typically, but good practice if they require it later
-                headers: Dict[str, str] = {}
-                if settings.OPENROUTER_API_KEY:
-                    headers["Authorization"] = f"Bearer {settings.OPENROUTER_API_KEY}"
-                
-                response = await client.get(f"{self.BASE_URL}/models", headers=headers)
+
+        try:
+            async with self._client(read_timeout=30.0) as client:
+                response = await client.get(f"{self.base_url}/models")
                 response.raise_for_status()
-                data = response.json().get("data", [])
-                
-                # Transform and filter
-                processed_models: List[Dict[str, Any]] = []
-                for model in data:
-                    pricing = model.get("pricing", {})
-                    prompt_price = float(pricing.get("prompt", "0"))
-                    completion_price = float(pricing.get("completion", "0"))
-                    
-                    is_free = (prompt_price == 0.0 and completion_price == 0.0)
-                    
-                    processed_models.append({
-                        "id": str(model.get("id")),
-                        "name": str(model.get("name")),
-                        "context_length": int(model.get("context_length", 0)),
-                        "pricing": {
-                            "prompt": str(pricing.get("prompt", "0")),
-                            "completion": str(pricing.get("completion", "0"))
-                        },
-                        "is_free": is_free
-                    })
-                
-                self._models_cache = processed_models
-                self._cache_time = current_time
-                return processed_models
-                
-            except Exception as e:
-                print(f"Error fetching models: {e}")
-                # Fallback to empty list or cached
-                return self._models_cache
+                raw_models = response.json().get("data", [])
+        except httpx.HTTPError as e:
+            logger.warning("Failed to fetch models (serving cached): %s", e)
+            return self._models_cache
+
+        processed: list[dict[str, Any]] = []
+        for model in raw_models:
+            architecture = model.get("architecture") or {}
+            outputs = architecture.get("output_modalities")
+            if isinstance(outputs, list) and outputs and "text" not in outputs:
+                continue  # image/audio-only models cannot debate
+            pricing = model.get("pricing") or {}
+            prompt_price = float(pricing.get("prompt") or 0)
+            completion_price = float(pricing.get("completion") or 0)
+            processed.append(
+                {
+                    "id": str(model.get("id")),
+                    "name": str(model.get("name") or model.get("id")),
+                    "context_length": int(model.get("context_length") or 0),
+                    "pricing": {
+                        "prompt": str(pricing.get("prompt") or "0"),
+                        "completion": str(pricing.get("completion") or "0"),
+                    },
+                    "is_free": prompt_price == 0.0 and completion_price == 0.0,
+                }
+            )
+
+        self._models_cache = processed
+        self._cache_time = now
+        return processed
+
 
 openrouter_client = OpenRouterClient()

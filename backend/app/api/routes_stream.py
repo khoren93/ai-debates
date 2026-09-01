@@ -1,58 +1,88 @@
 import json
-from typing import AsyncGenerator, Dict, Any
-from fastapi import APIRouter, Request
-from sse_starlette.sse import EventSourceResponse
-from redis import asyncio as aioredis
-from app.core.config import settings
+import logging
+import uuid
+from collections.abc import AsyncGenerator
+from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
+
+from app.core.config import TERMINAL_DEBATE_STATUSES
+from app.core.db import AsyncSessionLocal, get_db
+from app.core.redis import debate_channel, get_async_redis
+from app.models.models import Debate
+from app.services.events import TERMINAL_EVENTS
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_STATUS_EVENTS = {
+    "completed": "debate_completed",
+    "error": "debate_error",
+    "stopped": "debate_stopped",
+}
+
+
+def _terminal_event(debate: Debate) -> dict[str, str]:
+    event = _STATUS_EVENTS.get(debate.status, "debate_completed")
+    data: dict[str, Any] = {"debate_id": str(debate.id), "status": debate.status}
+    if debate.error_message:
+        data["message"] = debate.error_message
+    if debate.totals_json:
+        data["totals"] = debate.totals_json
+    return {"event": event, "data": json.dumps(data)}
+
+
 @router.get("/{debate_id}/stream")
-async def stream_debate(debate_id: str, request: Request) -> EventSourceResponse:
-    """
-    SSE Endpoint for streaming debate events.
-    Subscribes to Redis channel 'debate:{debate_id}'
-    """
-    async def event_generator() -> AsyncGenerator[Dict[str, Any], None]:
-        redis = await aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-        pubsub = redis.pubsub()
-        channel = f"debate:{debate_id}"
+async def stream_debate(
+    debate_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> EventSourceResponse:
+    """Server-Sent Events for a debate. Closes when the debate reaches a terminal state."""
+    try:
+        uuid_id = uuid.UUID(debate_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid debate id") from e
+
+    debate = await db.get(Debate, uuid_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found")
+    initial_status = debate.status
+
+    async def event_generator() -> AsyncGenerator[dict[str, str], None]:
+        channel = debate_channel(debate_id)
+        pubsub = get_async_redis().pubsub()
         await pubsub.subscribe(channel)
-        
         try:
-            # Yield initial connection message
             yield {
-                "event": "connected", 
-                "data": json.dumps({"message": "Monitor connected"})
+                "event": "connected",
+                "data": json.dumps({"debate_id": debate_id, "status": initial_status}),
             }
 
-            async for message in pubsub.listen():
-                if await request.is_disconnected():
+            # Re-check after subscribing so a debate finishing in between isn't missed.
+            async with AsyncSessionLocal() as session:
+                current = await session.get(Debate, uuid_id)
+            if current is None:
+                return
+            if current.status in TERMINAL_DEBATE_STATUSES:
+                yield _terminal_event(current)
+                return
+
+            while not await request.is_disconnected():
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not message or message.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(message["data"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Malformed pub/sub message on %s", channel)
+                    continue
+                event_type = str(payload.get("event", "update"))
+                yield {"event": event_type, "data": json.dumps(payload.get("data", {}))}
+                if event_type in TERMINAL_EVENTS:
                     break
-                    
-                if isinstance(message, dict) and message.get("type") == "message":
-                    # Parse Redis message (which is JSON stringified in orchestrator)
-                    payload_str: str = str(message.get("data"))
-                    try:
-                        payload: Dict[str, Any] = json.loads(payload_str)
-                        # We expect payload to have 'event' and 'data' keys
-                        event_type = str(payload.get("event", "update"))
-                        event_data = payload.get("data", {})
-                        
-                        yield {
-                            "event": event_type,
-                            "data": json.dumps(event_data)
-                        }
-                        
-                        # Stop stream if debate completed
-                        if event_type == "debate_completed":
-                            break
-                            
-                    except json.JSONDecodeError:
-                        print("Failed to decode Redis message")
-                        
         finally:
             await pubsub.unsubscribe(channel)
-            await redis.close()
+            await pubsub.aclose()
 
     return EventSourceResponse(event_generator())

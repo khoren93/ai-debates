@@ -1,24 +1,20 @@
-#!/bin/bash
-
-# AI Debates - Deployment Script
-# This script pulls the latest code and restarts containers
+#!/usr/bin/env bash
+# AI Debates - deployment script: pull latest code and rebuild containers.
+set -euo pipefail
+cd "$(dirname "$0")"
 
 echo "🚀 Starting deployment..."
 
-# 1. Pull latest changes
 echo "📥 Pulling latest code from GitHub..."
-git pull origin main
+git pull --ff-only origin main
 
-# 2. Rebuild and restart containers
-echo "🏗️ Building and starting containers..."
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+echo "🏗️  Building and starting containers (migrations run on api start)..."
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --remove-orphans
 
-# 3. Database migrations
-echo "🗄️ Running database migrations..."
-docker compose exec -T api alembic upgrade head
+echo "🩺 Container status:"
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
 
-# 4. Clean up old images
 echo "🧹 Cleaning up unused Docker images..."
 docker image prune -f
 
-echo "✅ Deployment complete! Check your domain in a few minutes after SSL is issued."
+echo "✅ Deployment complete."
