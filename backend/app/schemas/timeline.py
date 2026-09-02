@@ -1,0 +1,86 @@
+"""Timeline: the contract between the audio build (worker), the API and the browser-side
+video renderer. Serialized to `media/{debate_id}/timeline.json`."""
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+SpeakerRole = Literal["moderator", "debater", "judge"]
+Mascot = Literal["orb", "bolt", "cube"]
+
+
+class TimelineWord(BaseModel):
+    w: str
+    s: int  # ms relative to the segment's own audio
+    e: int
+
+
+class TimelineSpeaker(BaseModel):
+    id: str  # "participant_{i}" | "judge"
+    name: str
+    role: SpeakerRole
+    model: str
+    color: str
+    mascot: Mascot
+    avatar_url: str | None = None
+    voice_id: str | None = None
+
+
+class TimelineSegment(BaseModel):
+    seq_index: int
+    speaker_id: str
+    speaker_name: str
+    round_id: str
+    turn_type: str
+    start_ms: int  # absolute on the full track
+    end_ms: int
+    audio: str  # relative path, e.g. "turns/003.wav"
+    text: str  # spoken text without audio tags
+    words: list[TimelineWord] = Field(default_factory=list)
+    levels: list[float] = Field(default_factory=list)  # RMS envelope 0..1
+    levels_hz: int = 20
+    note: str | None = None
+
+
+class TimelineHighlight(BaseModel):
+    index: int
+    title: str
+    hook: str
+    start_ms: int
+    end_ms: int
+    seq_indexes: list[int] = Field(default_factory=list)
+
+
+class TimelineVerdict(BaseModel):
+    seq_index: int
+    winner_id: str | None = None
+    winner_name: str | None = None
+
+
+class TimelineStats(BaseModel):
+    chars: int = 0
+    tts_ms: int = 0
+    estimated_usd: float | None = None
+    cached_turns: int = 0
+
+
+class Timeline(BaseModel):
+    version: Literal[1] = 1
+    debate_id: str
+    title: str
+    topic: str
+    language: str
+    language_code: str
+    created_at: datetime
+    provider: str
+    model_id: str
+    speakers: list[TimelineSpeaker]
+    segments: list[TimelineSegment]
+    gap_ms: int
+    total_ms: int
+    full_audio_wav: str = "full.wav"
+    full_audio_mp3: str = "full.mp3"
+    verdict: TimelineVerdict | None = None
+    highlights: list[TimelineHighlight] = Field(default_factory=list)
+    stats: TimelineStats = Field(default_factory=TimelineStats)

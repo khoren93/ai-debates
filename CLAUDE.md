@@ -13,14 +13,19 @@ backend/            FastAPI API + RQ worker (Python 3.12+, managed with uv)
   app/api/            routers: debates, models, presets, stream (SSE)
   app/services/       orchestrator (RQ jobs), scheduler (turn order), prompt_builder,
                       openrouter_client, events (pub/sub), queue_manager
+  app/services/media/ audio pipeline: script (markdown→speech), tts/ (elevenlabs, edge),
+                      ffmpeg, highlights (LLM picks shorts), jobs (build_media_job), timeline
+  app/schemas/timeline.py  Timeline contract shared with frontend/src/api/timeline.ts
   app/models/         SQLAlchemy ORM models
   app/schemas/        Pydantic request/response schemas
   migrations/         Alembic (async env)
   tests/              pytest (pure unit tests, no DB/Redis needed)
 frontend/           React 19 + Vite 8 + Tailwind 4 + TypeScript
   src/api/            axios client, typed API functions, shared types
-  src/hooks/          useDebateStream (SSE), useSpeech (browser TTS)
-  src/components/     TurnBubble, ParticipantsBar, StatusBadge, RoundDivider
+  src/hooks/          useDebateStream (SSE), useSpeech (browser TTS), useDebateMedia (polling)
+  src/components/     TurnBubble, ParticipantsBar, StatusBadge, RoundDivider,
+                      MediaPanel (audio + video UI), RenderPanel (browser MP4 export)
+  src/video/          Remotion compositions (DebateLong 16:9, DebateShort 9:16) + render.ts
   src/pages/          DebateHistory (/), CreateDebate (/create), DebateLive (/debate/:id)
 docker-compose.yml  full stack; docker-compose.dev.yml = only Postgres + Redis for native dev
 ```
@@ -32,7 +37,8 @@ Backend (run from `backend/`):
 ```bash
 uv sync                                   # create .venv and install (incl. dev tools)
 uv run uvicorn app.main:app --reload      # API on :8000 (docs at /api/docs)
-RQ_SIMPLE_WORKER=true uv run python -m app.worker   # worker (SimpleWorker avoids fork issues on macOS)
+RQ_SIMPLE_WORKER=true uv run python -m app.worker   # worker for both queues (SimpleWorker avoids fork issues on macOS)
+uv run python -m app.worker --queues media          # media-only worker (needs ffmpeg on PATH)
 uv run alembic upgrade head               # apply migrations
 uv run alembic revision --autogenerate -m "describe change"
 uv run ruff check . && uv run ruff format .   # lint + format
@@ -84,6 +90,26 @@ Debate statuses: `queued | running | completed | error | stopped`.
 Stopping: `POST /api/debates/{id}/stop` sets the status, sets `debate:{id}:stop` in Redis
 (checked by the worker every few chunks) and publishes `debate_stopped`.
 
+### Media pipeline (audio on the server, video in the browser)
+
+6. `POST /api/debates/{id}/media` (finished debates only) stores the chosen TTS options in
+   `debates.media_json`, sets `media_status=queued` and enqueues `build_media_job` on the
+   `media` RQ queue (`MEDIA_JOB_TIMEOUT`). An optional user ElevenLabs key goes to Redis
+   (`debate:{id}:tts_key`), never to Postgres. ElevenLabs builds on the system key are
+   rate-limited per IP per day (`MEDIA_CREATE_RATE_LIMIT`; admin session or `X-Media-Token` bypass).
+7. The job cleans each turn's Markdown (`media/script.py`), synthesizes it with the provider
+   (`elevenlabs` with word timestamps / forced-alignment fallback, or the free `edge` voices),
+   normalizes loudness with ffmpeg, caches per-turn WAV+JSON by content hash under
+   `MEDIA_ROOT/{debate_id}/turns/`, mixes `full.wav`/`full.mp3`, asks a cheap LLM for
+   short-video highlights and writes `timeline.json` (`app/schemas/timeline.py`).
+   Progress lives in `media_json` (polled by `GET /api/debates/{id}/media`); `media_status`
+   is `none | queued | running | ready | error`.
+8. Files are served by `MediaStaticFiles` at `/api/media/files/{debate_id}/...` (Range
+   requests work). The frontend `MediaPanel` plays the track with karaoke words and renders
+   MP4s **in the visitor's browser** via `@remotion/web-renderer` — the server never encodes video.
+   `output_style=spoken` in `DebateConfig` asks the models for plain spoken prose with
+   optional `[emotion]` tags, which ElevenLabs v3 understands.
+
 ## Conventions
 
 - Python: ruff (line length 100, isort), pyright `standard`, type hints everywhere,
@@ -105,5 +131,10 @@ Stopping: `POST /api/debates/{id}/stop` sets the status, sets `debate:{id}:stop`
 - The `frontend` container name (`ai-debates-frontend-1`) is referenced by the external Caddy
   on the production host via the `caddy_net` network.
 - `DEBATE_CREATE_RATE_LIMIT` (per IP per hour) protects the system OpenRouter key; set 0 to disable.
+- Media: `MEDIA_ROOT` is `./media` natively and the `media_data` volume (`/media`) in Docker;
+  the worker image target installs ffmpeg, the api target does not. Docker runs `worker`
+  (`--queues default`) and `media-worker` (`--queues media`); natively one worker takes both.
+- Without `ELEVENLABS_API_KEY` the UI offers only the free Edge voices (unofficial API, few
+  voices per language) or a user-supplied ElevenLabs key.
 - Old rows may have `turn_type=moderator_comment` and inline `"[Error ...]"` text; both are still
   handled (`scheduler.MODERATOR_TURN_TYPES`, `lib/format.isErrorTurn`).

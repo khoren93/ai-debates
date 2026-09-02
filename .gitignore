@@ -18,6 +18,10 @@ env/
 # Docker
 docker-compose.override.yml
 
+# Generated audio/timeline files (backend MEDIA_ROOT)
+/backend/media/
+/media/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -31,6 +35,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/src/lib/
 lib64/
 parts/
 sdist/
@@ -51,3 +56,6 @@ yarn-error.log
 .ruff_cache/
 .pytest_cache/
 *.tsbuildinfo
+
+# Standalone media demo (not part of the app)
+demo/

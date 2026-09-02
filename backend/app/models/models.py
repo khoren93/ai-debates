@@ -46,6 +46,13 @@ class Debate(Base):
     # Aggregated stats: {tokens_in, tokens_out, cost, turns_count}
     totals_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    # Audio/video pipeline: none | queued | running | ready | error.
+    # media_json holds progress, options, asset names and stats (see app.services.media.state).
+    media_status: Mapped[str] = mapped_column(
+        String, default="none", server_default="none", index=True
+    )
+    media_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default="{}")
+
     session: Mapped["Session | None"] = relationship("Session", back_populates="debates")
     turns: Mapped[list["Turn"]] = relationship(
         "Turn",

@@ -11,10 +11,11 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.auth import authentication_backend
 from app.admin.views import DebateAdmin, ParticipantAdmin, SessionAdmin, TurnAdmin
-from app.api import routes_debates, routes_models, routes_presets, routes_stream
+from app.api import routes_debates, routes_media, routes_models, routes_presets, routes_stream
 from app.core.config import settings
 from app.core.db import engine
 from app.core.logging import setup_logging
+from app.core.media_static import MediaStaticFiles
 from app.core.redis import close_async_redis, get_async_redis
 
 setup_logging()
@@ -32,6 +33,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             logger.warning(message)
     if not settings.OPENROUTER_API_KEY:
         logger.warning("OPENROUTER_API_KEY is not set; only user-supplied keys will work")
+    if not settings.ELEVENLABS_API_KEY:
+        logger.info("ELEVENLABS_API_KEY is not set; media builds use the free Edge voices")
+    settings.media_root_path.mkdir(parents=True, exist_ok=True)
     yield
     await close_async_redis()
     await engine.dispose()
@@ -72,6 +76,14 @@ app.include_router(routes_models.router, prefix="/api/models", tags=["models"])
 app.include_router(routes_presets.router, prefix="/api/presets", tags=["presets"])
 app.include_router(routes_debates.router, prefix="/api/debates", tags=["debates"])
 app.include_router(routes_stream.router, prefix="/api/debates", tags=["stream"])
+app.include_router(routes_media.router, prefix="/api", tags=["media"])
+
+# Generated audio + timeline files. Mounted after the routers so /api/media/voices etc. win.
+app.mount(
+    "/api/media/files",
+    MediaStaticFiles(directory=str(settings.media_root_path), check_dir=False),
+    name="media",
+)
 
 
 @app.get("/api", tags=["meta"])

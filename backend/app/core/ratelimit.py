@@ -17,18 +17,19 @@ def _client_id(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-async def enforce_debate_create_limit(request: Request) -> None:
-    """FastAPI dependency: cap debates created per client IP per hour."""
-    limit = settings.DEBATE_CREATE_RATE_LIMIT
+async def enforce_limit(
+    request: Request, *, bucket: str, limit: int, window_seconds: int, what: str
+) -> None:
+    """Fixed-window counter per client IP. `limit <= 0` disables the check."""
     if limit <= 0:
         return
 
-    key = rate_limit_key("create_debate", _client_id(request))
+    key = rate_limit_key(bucket, _client_id(request))
     try:
         redis = get_async_redis()
         async with redis.pipeline(transaction=True) as pipe:
             pipe.incr(key)
-            pipe.expire(key, WINDOW_SECONDS, nx=True)
+            pipe.expire(key, window_seconds, nx=True)
             pipe.ttl(key)
             count, _, ttl = await pipe.execute()
     except RedisError:
@@ -36,9 +37,31 @@ async def enforce_debate_create_limit(request: Request) -> None:
         return
 
     if int(count) > limit:
-        retry_after = max(int(ttl), 1) if isinstance(ttl, int) else WINDOW_SECONDS
+        retry_after = max(int(ttl), 1) if isinstance(ttl, int) else window_seconds
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Too many debates created. Try again in {retry_after // 60 + 1} minutes.",
+            detail=f"Too many {what}. Try again in {retry_after // 60 + 1} minutes.",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+async def enforce_debate_create_limit(request: Request) -> None:
+    """FastAPI dependency: cap debates created per client IP per hour."""
+    await enforce_limit(
+        request,
+        bucket="create_debate",
+        limit=settings.DEBATE_CREATE_RATE_LIMIT,
+        window_seconds=WINDOW_SECONDS,
+        what="debates created",
+    )
+
+
+async def enforce_media_create_limit(request: Request) -> None:
+    """Cap media (TTS) builds on the system key per client IP per day."""
+    await enforce_limit(
+        request,
+        bucket="create_media",
+        limit=settings.MEDIA_CREATE_RATE_LIMIT,
+        window_seconds=86400,
+        what="media generations",
+    )

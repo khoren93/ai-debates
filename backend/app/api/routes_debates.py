@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import shutil
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -27,6 +28,8 @@ from app.schemas.schemas import (
     TurnUsage,
 )
 from app.services.events import publish_event_async
+from app.services.media.languages import language_code
+from app.services.media.paths import MediaPaths
 from app.services.queue_manager import enqueue_debate_start
 from app.services.scheduler import speaker_role_for
 
@@ -51,6 +54,7 @@ def _turn_out(turn: Turn) -> TurnOut:
         round_id=turn.round_id,
         turn_type=turn.turn_type,
         speaker_role=speaker_role_for(turn.turn_type),  # type: ignore[arg-type]
+        speaker_id=turn.speaker_id,
         speaker_name=turn.speaker_name,
         text=turn.text,
         error=turn.error,
@@ -71,7 +75,12 @@ async def list_debates(
     debates = (await db.execute(stmt)).scalars().all()
     return [
         DebateSummary(
-            id=str(d.id), title=d.title, status=d.status, created_at=d.created_at, totals=_totals(d)
+            id=str(d.id),
+            title=d.title,
+            status=d.status,
+            media_status=d.media_status or "none",
+            created_at=d.created_at,
+            totals=_totals(d),
         )
         for d in debates
     ]
@@ -145,6 +154,7 @@ async def get_debate(debate_id: str, db: AsyncSession = Depends(get_db)) -> Deba
     return DebateDetail(
         id=str(debate.id),
         status=debate.status,
+        media_status=debate.media_status or "none",
         title=debate.title,
         error_message=debate.error_message,
         created_at=debate.created_at,
@@ -154,20 +164,23 @@ async def get_debate(debate_id: str, db: AsyncSession = Depends(get_db)) -> Deba
             topic=conf.get("topic", ""),
             description=conf.get("description"),
             language=conf.get("language", "English"),
+            language_code=language_code(conf.get("language")),
             num_rounds=int(conf.get("num_rounds") or 1),
             length_preset=conf.get("length_preset", "medium"),
             intensity=int(conf.get("intensity") or 5),
+            output_style=conf.get("output_style") or "markdown",
         ),
         totals=_totals(debate),
         participants=[
             ParticipantOut(
+                id=f"participant_{i}",  # rows are inserted in config order
                 name=p.persona_name,
                 role=p.role,
                 model=p.model_id,
                 voice_name=p.voice_name,
                 avatar=p.avatar_url,
             )
-            for p in debate.participants
+            for i, p in enumerate(debate.participants)
         ],
         turns=[_turn_out(t) for t in debate.turns],
     )
@@ -210,3 +223,4 @@ async def delete_debate(debate_id: str, db: AsyncSession = Depends(get_db)) -> N
             await get_async_redis().set(stop_flag_key(debate_id), "1", ex=3600)
     await db.delete(debate)
     await db.commit()
+    await run_in_threadpool(shutil.rmtree, MediaPaths(debate_id).dir, True)

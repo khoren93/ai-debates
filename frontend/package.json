@@ -15,13 +15,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@remotion/captions": "^4.0.520",
+    "@remotion/media": "^4.0.520",
+    "@remotion/player": "^4.0.520",
+    "@remotion/web-renderer": "^4.0.520",
     "axios": "^1.20.0",
     "lucide-react": "^1.39.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.18.3",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "remotion": "^4.0.520"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

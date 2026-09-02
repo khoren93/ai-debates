@@ -5,6 +5,7 @@
 x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-ai_debates}
   REDIS_URL: redis://redis:6379/0
+  MEDIA_ROOT: /media
 
 services:
   db:
@@ -33,7 +34,9 @@ services:
       retries: 12
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      target: api
     restart: always
     command: >
       sh -c "alembic upgrade head &&
@@ -42,6 +45,8 @@ services:
       - .env
     environment:
       <<: *backend-env
+    volumes:
+      - media_data:/media
     depends_on:
       db:
         condition: service_healthy
@@ -54,14 +59,38 @@ services:
       retries: 5
       start_period: 30s
 
+  # Debate turns (LLM streaming).
   worker:
-    build: ./backend
+    build:
+      context: ./backend
+      target: worker
     restart: always
-    command: python -m app.worker
+    command: python -m app.worker --queues default
     env_file:
       - .env
     environment:
       <<: *backend-env
+    volumes:
+      - media_data:/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Audio builds (TTS + ffmpeg). Separate process so a long build never blocks debate turns.
+  media-worker:
+    build:
+      context: ./backend
+      target: worker
+    restart: always
+    command: python -m app.worker --queues media
+    env_file:
+      - .env
+    environment:
+      <<: *backend-env
+    volumes:
+      - media_data:/media
     depends_on:
       db:
         condition: service_healthy
@@ -86,3 +115,4 @@ services:
 
 volumes:
   postgres_data:
+  media_data:

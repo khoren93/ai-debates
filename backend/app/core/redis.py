@@ -47,5 +47,10 @@ def stop_flag_key(debate_id: str) -> str:
     return f"debate:{debate_id}:stop"
 
 
+def tts_key_key(debate_id: str) -> str:
+    """User-supplied TTS (ElevenLabs) key for one media build. Never stored in Postgres."""
+    return f"debate:{debate_id}:tts_key"
+
+
 def rate_limit_key(bucket: str, client_id: str) -> str:
     return f"ratelimit:{bucket}:{client_id}"

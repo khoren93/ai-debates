@@ -22,6 +22,7 @@ dependencies = [
     "itsdangerous>=2.2.0",
     "python-multipart>=0.0.32",
     "greenlet>=3.5.0",
+    "edge-tts>=7.0",
 ]
 
 [dependency-groups]

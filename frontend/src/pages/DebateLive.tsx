@@ -7,6 +7,7 @@ import { ACTIVE_STATUSES, type DebateDetail, type Turn, type TurnStartedEvent } 
 import { useDebateStream } from '../hooks/useDebateStream';
 import { useSpeech } from '../hooks/useSpeech';
 import { formatCost, formatTokens } from '../lib/format';
+import MediaPanel from '../components/MediaPanel';
 import ParticipantsBar from '../components/ParticipantsBar';
 import RoundDivider from '../components/RoundDivider';
 import StatusBadge from '../components/StatusBadge';
@@ -240,6 +241,8 @@ const DebateLive = () => {
       )}
 
       <ParticipantsBar participants={participants} />
+
+      {!isActive && debate.turns.length > 0 && <MediaPanel debate={debate} />}
 
       <div className="space-y-6">
         {debate.turns.length === 0 && !streaming && (

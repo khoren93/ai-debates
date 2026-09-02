@@ -177,7 +177,8 @@ The system uses an event-driven architecture to handle long-running LLM generati
 ## 🗺️ Roadmap
 
 - [x] **Voice Synthesis (TTS)**: Browser text-to-speech playback.
-- [ ] **Neural TTS**: High-quality voices via a TTS API.
+- [x] **Neural TTS**: ElevenLabs / Edge voices with word timestamps, karaoke transcript and MP3 export.
+- [x] **Video**: 16:9 debate video and 9:16 shorts rendered in the browser (Remotion).
 - [ ] **User Voting**: Let the audience decide the winner.
 - [x] **Export Transcripts**: Save debates as Markdown.
 - [ ] **PDF Export**: Nicely formatted transcript downloads.

@@ -1,4 +1,5 @@
 from functools import cached_property
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,6 +35,29 @@ class Settings(BaseSettings):
     # Abuse protection: debates per hour per client IP. 0 disables the limit.
     DEBATE_CREATE_RATE_LIMIT: int = 20
 
+    # Media pipeline (neural TTS + timeline for browser-side video rendering)
+    # Generated files live under MEDIA_ROOT (a shared volume in Docker) and are served
+    # at /api/media/files. Relative paths resolve against the backend working directory.
+    MEDIA_ROOT: str = "./media"
+    MEDIA_JOB_TIMEOUT: int = 3600  # seconds for one audio build job
+    # Comma-separated RQ queues a worker listens to ("default" = debate turns, "media" = TTS).
+    RQ_QUEUES: str = "default,media"
+    # Media generations per client IP per day on the system ElevenLabs key. 0 disables.
+    MEDIA_CREATE_RATE_LIMIT: int = 5
+    # Optional shared secret (header X-Media-Token) that bypasses the media rate limit.
+    MEDIA_API_TOKEN: str | None = None
+    ELEVENLABS_API_KEY: str | None = None
+    ELEVENLABS_BASE_URL: str = "https://api.elevenlabs.io"
+    TTS_DEFAULT_MODEL_ID: str = "eleven_v3"
+    TTS_MAX_CHARS_PER_REQUEST: int = 2500
+    TTS_CONCURRENCY: int = 2
+    # Cheap model used to pick short-video highlights and the winner from the transcript.
+    MEDIA_HIGHLIGHTS_MODEL: str = "openai/gpt-4o-mini"
+    MEDIA_GAP_MS: int = 600
+    MEDIA_LOUDNESS_LUFS: float = -16.0
+    FFMPEG_BIN: str = "ffmpeg"
+    FFPROBE_BIN: str = "ffprobe"
+
     # Site / admin
     SITE_URL: str = "http://localhost"
     ADMIN_USER: str = "admin"
@@ -52,6 +76,14 @@ class Settings(BaseSettings):
     def sync_database_url(self) -> str:
         """Blocking driver URL for the RQ worker (psycopg 3)."""
         return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+
+    @cached_property
+    def media_root_path(self) -> Path:
+        return Path(self.MEDIA_ROOT).expanduser().resolve()
+
+    @cached_property
+    def rq_queue_names(self) -> list[str]:
+        return [q.strip() for q in self.RQ_QUEUES.split(",") if q.strip()] or ["default"]
 
     @cached_property
     def allowed_origins_list(self) -> list[str]:

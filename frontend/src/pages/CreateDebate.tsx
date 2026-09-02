@@ -4,7 +4,7 @@ import { ArrowLeft, Plus, ChevronDown, Volume2 } from 'lucide-react';
 import { createDebate } from '../api/debates';
 import { getCredits, listModels, validateModels } from '../api/models';
 import { getErrorMessage } from '../api/client';
-import type { DebateConfig, ModelInfo } from '../api/types';
+import type { DebateConfig, ModelInfo, OutputStyle } from '../api/types';
 import { formatContext, formatPrice } from '../lib/format';
 import { TOPIC_TEMPLATES } from '../data/topics';
 import { STYLE_PRESETS } from '../data/styles';
@@ -78,6 +78,7 @@ const CreateDebate = () => {
     topic: '',
     description: '',
     language: 'English',
+    output_style: 'markdown' as OutputStyle, // markdown | spoken (plain prose for audio/video)
     num_rounds: 2, 
     length_preset: 'very_short', // short, medium, long
     moderator_model: '',
@@ -309,6 +310,7 @@ const CreateDebate = () => {
         topic: settings.topic,
         description: settings.description,
         language: settings.language,
+        output_style: settings.output_style,
         num_rounds: settings.num_rounds,
         length_preset: settings.length_preset,
         debate_preset_id: "custom",
@@ -428,6 +430,19 @@ const CreateDebate = () => {
                 <option value="German">German</option>
                 <option value="Chinese">Chinese</option>
               </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Text style</label>
+              <select
+                className="w-full h-10 p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                value={settings.output_style}
+                onChange={e => setSettings({...settings, output_style: e.target.value as OutputStyle})}
+              >
+                <option value="markdown">Markdown (best for reading)</option>
+                <option value="spoken">Spoken (plain prose for audio &amp; video)</option>
+              </select>
+              <p className="mt-1 text-xs text-gray-500">Spoken style asks the models for short quotable sentences without lists or headers, which voices much better.</p>
             </div>
             
             <div className="grid grid-cols-2 gap-4">

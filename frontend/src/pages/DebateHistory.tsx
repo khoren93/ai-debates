@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, MessageSquare, Plus, Trash2 } from 'lucide-react';
+import { ArrowRight, Headphones, MessageSquare, Plus, Trash2 } from 'lucide-react';
 import { deleteDebate, listDebates } from '../api/debates';
 import { getErrorMessage } from '../api/client';
 import type { DebateSummary } from '../api/types';
@@ -97,6 +97,11 @@ const DebateHistory = () => {
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-500 mt-1">
                       <span>{new Date(debate.created_at).toLocaleString()}</span>
                       <StatusBadge status={debate.status} />
+                      {debate.media_status === 'ready' && (
+                        <span className="inline-flex items-center text-blue-600" title="Audio and video available">
+                          <Headphones className="w-3.5 h-3.5 mr-1" /> audio
+                        </span>
+                      )}
                       {debate.totals.cost > 0 && <span>{formatCost(debate.totals.cost)}</span>}
                     </div>
                   </div>

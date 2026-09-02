@@ -47,6 +47,7 @@ export interface Turn {
   round_id: string;
   turn_type: string;
   speaker_role: ParticipantRole;
+  speaker_id?: string; // "participant_{i}" | "judge"
   speaker_name: string;
   text: string;
   error: string | null;
@@ -56,6 +57,7 @@ export interface Turn {
 }
 
 export interface Participant {
+  id?: string; // "participant_{i}", matches Turn.speaker_id
   name: string | null;
   role: ParticipantRole | string;
   model: string;
@@ -67,6 +69,7 @@ export interface DebateSummary {
   id: string;
   title: string | null;
   status: DebateStatus;
+  media_status?: MediaStatus;
   created_at: string;
   totals: DebateTotals;
 }
@@ -75,14 +78,17 @@ export interface DebateSettings {
   topic: string;
   description: string | null;
   language: string;
+  language_code?: string;
   num_rounds: number;
   length_preset: string;
   intensity: number;
+  output_style?: OutputStyle;
 }
 
 export interface DebateDetail {
   id: string;
   status: DebateStatus;
+  media_status?: MediaStatus;
   title: string | null;
   error_message: string | null;
   created_at: string;
@@ -113,6 +119,7 @@ export interface DebateConfig {
   length_preset: LengthPreset | string;
   num_rounds: number;
   intensity?: number;
+  output_style?: OutputStyle;
   user_provider_key?: string;
 }
 
@@ -143,4 +150,80 @@ export interface DebateTerminalEvent {
   status?: DebateStatus;
   message?: string;
   totals?: DebateTotals;
+}
+
+// --- Media (audio + browser-side video) --------------------------------------
+
+export type OutputStyle = 'markdown' | 'spoken';
+export type MediaStatus = 'none' | 'queued' | 'running' | 'ready' | 'error';
+export type TTSProviderName = 'elevenlabs' | 'edge';
+
+export interface MediaOptions {
+  provider: TTSProviderName;
+  model_id: string;
+  voices: Record<string, string>; // speaker id -> provider voice id
+}
+
+export interface GenerateMediaRequest extends MediaOptions {
+  force?: boolean;
+  user_tts_key?: string;
+}
+
+export interface MediaProgress {
+  step: string;
+  current: number;
+  total: number;
+  message: string;
+  error: string | null;
+}
+
+export interface MediaUrls {
+  timeline: string;
+  full_mp3: string;
+  full_wav: string;
+  base: string;
+}
+
+export interface MediaStats {
+  chars: number;
+  tts_ms: number;
+  estimated_usd: number | null;
+  total_ms: number;
+  cached_turns: number;
+}
+
+export interface DebateMedia {
+  debate_id: string;
+  media_status: MediaStatus;
+  progress: MediaProgress;
+  options: MediaOptions | null;
+  urls: MediaUrls | null;
+  stats: MediaStats | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface VoiceInfo {
+  id: string;
+  name: string;
+  description: string | null;
+  preview_url: string | null;
+  gender: string | null;
+  languages: string[];
+}
+
+export interface VoicesResponse {
+  provider: TTSProviderName;
+  voices: VoiceInfo[];
+  defaults: Record<string, string>;
+}
+
+export interface MediaCapabilities {
+  elevenlabs: boolean;
+  edge: boolean;
+  ffmpeg: boolean;
+  default_provider: TTSProviderName;
+  default_model_id: string;
+  elevenlabs_models: string[];
+  rate_limit_per_day: number;
 }

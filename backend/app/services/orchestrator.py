@@ -10,12 +10,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.redis import get_sync_redis, provider_key_key, stop_flag_key
+from app.core.sync_db import get_sync_session
 from app.models.models import Debate, Turn, utcnow
 from app.services import queue_manager
 from app.services.events import publish_event
@@ -32,17 +32,7 @@ logger = logging.getLogger(__name__)
 VERDICT_SPEAKER_NAME = "⚖️ Verdict"
 STOP_CHECK_EVERY_N_CHUNKS = 10
 
-_SessionLocal: sessionmaker[Session] | None = None
-
-
-def get_session() -> Session:
-    """Blocking DB session. The engine is created lazily so that forked RQ
-    work-horses never share a connection pool with the parent process."""
-    global _SessionLocal
-    if _SessionLocal is None:
-        engine = create_engine(settings.sync_database_url, poolclass=NullPool)
-        _SessionLocal = sessionmaker(bind=engine)
-    return _SessionLocal()
+get_session = get_sync_session
 
 
 # --- helpers ---------------------------------------------------------------
@@ -73,6 +63,7 @@ def _serialize_turn(turn: Turn) -> dict[str, Any]:
         "round_id": turn.round_id,
         "turn_type": turn.turn_type,
         "speaker_role": speaker_role_for(turn.turn_type),
+        "speaker_id": turn.speaker_id,
         "speaker_name": turn.speaker_name,
         "text": turn.text,
         "error": turn.error,

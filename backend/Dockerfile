@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.13-slim
+# Two targets share one dependency layer:
+#   api    — FastAPI (no ffmpeg)
+#   worker — RQ worker with ffmpeg for the media (TTS/mixing) pipeline
+FROM python:3.13-slim AS base
 
 # uv for fast, reproducible installs (versions pinned in uv.lock)
 COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
@@ -20,8 +23,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY . .
 
-RUN useradd --create-home --uid 1000 app && chown -R app:app /code
-USER app
+# /media is the shared volume for generated audio (see docker-compose.yml).
+RUN useradd --create-home --uid 1000 app && mkdir -p /media && chown -R app:app /code /media
 
+FROM base AS api
+USER app
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM base AS worker
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+USER app
+CMD ["python", "-m", "app.worker"]

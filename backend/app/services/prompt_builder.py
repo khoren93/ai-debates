@@ -55,12 +55,27 @@ def _participants_block(participants: list[dict[str, Any]]) -> str:
     return "\n".join(f"- {p.get('display_name')} ({p.get('role')})" for p in participants)
 
 
-def _common_rules(language: str, words: int) -> str:
+SPOKEN_TAGS = "[sarcastic] [laughs] [serious] [calm] [confident] [firm] [pause] [excited] [sighs]"
+
+
+def _formatting_rules(output_style: str) -> str:
+    if output_style == "spoken":
+        return (
+            "\nFORMATTING: This is a SPOKEN debate: your words will be voiced by text-to-speech and "
+            "turned into a video. Write plain spoken prose only: no Markdown, no headers, no bullet "
+            "or numbered lists, no emojis, no stage directions. Use short, punchy, quotable sentences "
+            "and address your opponents by name. You may add at most one emotion cue per paragraph, "
+            f"in square brackets at the start of a sentence, chosen only from: {SPOKEN_TAGS}."
+        )
+    return "\nFORMATTING: Use Markdown (bold, italics, short lists) to make your text readable."
+
+
+def _common_rules(language: str, words: int, output_style: str = "markdown") -> str:
     return (
         f"\nIMPORTANT: Write your response in {language}."
         f"\nLength: about {words} words. Stay within this limit."
-        "\nFORMATTING: Use Markdown (bold, italics, short lists) to make your text readable."
-        "\nDo NOT prefix your response with your own name or role. Speak in first person."
+        + _formatting_rules(output_style)
+        + "\nDo NOT prefix your response with your own name or role. Speak in first person."
     )
 
 
@@ -78,7 +93,7 @@ def build_debater_messages(
         f"You are a participant in a structured debate. Your name is {speaker['display_name']}.\n"
         f"Persona and stance: {persona}\n"
         f"Style: {intensity_description(int(conf.get('intensity', 5)))}"
-        + _common_rules(language, words)
+        + _common_rules(language, words, conf.get("output_style", "markdown"))
     )
 
     user = (
@@ -111,7 +126,7 @@ def build_moderator_messages(
         f"You are the moderator of a structured debate. Your name is {speaker['display_name']}.\n"
         f"{persona}\n"
         "You never argue for a side and never give your own opinion on the topic."
-        + _common_rules(language, words)
+        + _common_rules(language, words, conf.get("output_style", "markdown"))
     )
 
     if turn.turn_type == "moderator_intro":
@@ -145,15 +160,26 @@ def build_verdict_messages(
     conf: dict[str, Any], history: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
     language = conf.get("language", "English")
+    if conf.get("output_style") == "spoken":
+        structure = (
+            "You are speaking on camera: name the winner (or declare a draw) in your FIRST sentence, "
+            "then explain in a few short spoken paragraphs how each debater performed, which arguments "
+            "were strongest and where the reasoning was weak. Plain spoken prose only: no Markdown, "
+            "no headers, no lists, no emojis."
+        )
+    else:
+        structure = (
+            "Strictly follow this structure (use Markdown headers and bold text):\n"
+            "1. **Winner** — declare the winner (or a draw) based on argument strength, "
+            "logic, and persuasiveness.\n"
+            "2. **Analysis** — briefly evaluate each debater's performance.\n"
+            "3. **Key Arguments** — highlight the strongest points made.\n"
+            "4. **Logical Fallacies** — point out weak reasoning or fallacies, if any."
+        )
     system = (
         "You are an expert, impartial debate judge.\n"
         "Analyze the full debate transcript provided by the user and deliver a verdict.\n"
-        "Strictly follow this structure (use Markdown headers and bold text):\n"
-        "1. **Winner** — declare the winner (or a draw) based on argument strength, "
-        "logic, and persuasiveness.\n"
-        "2. **Analysis** — briefly evaluate each debater's performance.\n"
-        "3. **Key Arguments** — highlight the strongest points made.\n"
-        "4. **Logical Fallacies** — point out weak reasoning or fallacies, if any.\n"
+        f"{structure}\n"
         f"\nWrite in {language}. Style: objective, professional, analytical."
     )
     user = (

@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 LengthPreset = Literal["very_short", "short", "medium", "long"]
 ParticipantRole = Literal["moderator", "debater"]
+# "spoken" asks the models for plain spoken prose (no Markdown) suited for TTS and video.
+OutputStyle = Literal["markdown", "spoken"]
 
 
 # --- Preset Schemas ---
@@ -75,6 +77,7 @@ class DebateConfig(BaseModel):
     length_preset: LengthPreset = "medium"
     num_rounds: int = Field(default=3, ge=1, le=10)
     intensity: int = Field(default=5, ge=1, le=10)
+    output_style: OutputStyle = "markdown"
     # Optional BYOK OpenRouter key. Never persisted to the database.
     user_provider_key: str | None = Field(default=None, max_length=300)
 
@@ -116,6 +119,7 @@ class TurnOut(BaseModel):
     round_id: str
     turn_type: str
     speaker_role: ParticipantRole
+    speaker_id: str = ""  # "participant_{i}" (index into config participants) or "judge"
     speaker_name: str
     text: str
     error: str | None = None
@@ -125,6 +129,7 @@ class TurnOut(BaseModel):
 
 
 class ParticipantOut(BaseModel):
+    id: str = ""  # "participant_{i}", matches Turn.speaker_id
     name: str | None
     role: str
     model: str
@@ -136,6 +141,7 @@ class DebateSummary(BaseModel):
     id: str
     title: str | None
     status: str
+    media_status: str = "none"
     created_at: datetime
     totals: DebateTotals = Field(default_factory=DebateTotals)
 
@@ -144,14 +150,17 @@ class DebateSettingsOut(BaseModel):
     topic: str
     description: str | None = None
     language: str
+    language_code: str = "en"
     num_rounds: int
     length_preset: str
     intensity: int
+    output_style: OutputStyle = "markdown"
 
 
 class DebateDetail(BaseModel):
     id: str
     status: str
+    media_status: str = "none"
     title: str | None
     error_message: str | None = None
     created_at: datetime
