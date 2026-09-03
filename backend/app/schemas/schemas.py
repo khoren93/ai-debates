@@ -7,6 +7,15 @@ LengthPreset = Literal["very_short", "short", "medium", "long"]
 ParticipantRole = Literal["moderator", "debater"]
 # "spoken" asks the models for plain spoken prose (no Markdown) suited for TTS and video.
 OutputStyle = Literal["markdown", "spoken"]
+DebateStatus = Literal["draft", "queued", "running", "completed", "error", "stopped"]
+MediaOutput = Literal["audio", "video", "short"]
+VideoQuality = Literal["720p", "1080p", "4k"]
+TTSProvider = Literal["elevenlabs", "edge"]
+
+GALLERY_CATEGORIES: tuple[str, ...] = ("tech", "society", "science", "culture", "money", "fun")
+
+# Request-only fields that must never be written to `debates.config_json`.
+TRANSIENT_CONFIG_FIELDS: frozenset[str] = frozenset({"user_provider_key", "draft"})
 
 
 # --- Preset Schemas ---
@@ -68,6 +77,16 @@ class ParticipantConfig(BaseModel):
     persona_custom: str | None = Field(default=None, max_length=4000)
 
 
+class MediaPlan(BaseModel):
+    """What to produce automatically once the debate finishes (chosen in the wizard)."""
+
+    provider: TTSProvider = "edge"
+    model_id: str = Field(default="eleven_v3", max_length=100)
+    voices: dict[str, str] = Field(default_factory=dict)  # speaker id -> provider voice id
+    outputs: list[MediaOutput] = Field(default_factory=lambda: ["audio", "video", "short"])
+    quality: VideoQuality = "1080p"
+
+
 class DebateConfig(BaseModel):
     topic: str = Field(min_length=1, max_length=500)
     description: str | None = Field(default=None, max_length=4000)
@@ -78,6 +97,9 @@ class DebateConfig(BaseModel):
     num_rounds: int = Field(default=3, ge=1, le=10)
     intensity: int = Field(default=5, ge=1, le=10)
     output_style: OutputStyle = "markdown"
+    media_plan: MediaPlan | None = None
+    # Save without starting (status=draft). Request-only.
+    draft: bool = False
     # Optional BYOK OpenRouter key. Never persisted to the database.
     user_provider_key: str | None = Field(default=None, max_length=300)
 
@@ -92,11 +114,65 @@ class DebateConfig(BaseModel):
             raise ValueError("At most one moderator is allowed")
         return value
 
+    def persisted(self) -> dict[str, Any]:
+        """The part of the config that is stored on the debate row."""
+        return self.model_dump(exclude=set(TRANSIENT_CONFIG_FIELDS))
+
+
+class StartDebateRequest(BaseModel):
+    user_provider_key: str | None = Field(default=None, max_length=300)
+
 
 class DebateResponse(BaseModel):
     debate_id: str
     status: str
     message: str
+
+
+class EstimateOut(BaseModel):
+    turns: int
+    words: int
+    tokens_in: int
+    tokens_out: int
+    llm_cost_usd: float
+    tts_chars: int
+    tts_cost_usd: float
+    credits_cost_usd: float
+    duration_ms: int
+    render_ms: int
+    own_key: bool = False
+    paid_models: list[str] = Field(default_factory=list)
+    credits_before: float | None = None
+    credits_after: float | None = None
+    sufficient: bool = True
+
+
+class PublishRequest(BaseModel):
+    category: str | None = None
+
+    @field_validator("category")
+    @classmethod
+    def _category(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip().lower()
+        if value not in GALLERY_CATEGORIES:
+            raise ValueError(f"Category must be one of: {', '.join(GALLERY_CATEGORIES)}")
+        return value
+
+
+class PublishOut(BaseModel):
+    is_public: bool
+    slug: str | None
+    share_url: str | None
+
+
+class RenderReport(BaseModel):
+    kind: Literal["long", "short"]
+
+
+class RendersOut(BaseModel):
+    renders: dict[str, int]
 
 
 # --- Debate Read Schemas ---
@@ -137,13 +213,41 @@ class ParticipantOut(BaseModel):
     avatar: str | None = None
 
 
+class VerdictFeedback(BaseModel):
+    speaker_id: str
+    name: str
+    text: str
+
+
+class VerdictOut(BaseModel):
+    winner_id: str | None = None
+    winner_name: str | None = None
+    is_draw: bool = True
+    headline: str = ""
+    feedback: list[VerdictFeedback] = Field(default_factory=list)
+
+
+class BillingOut(BaseModel):
+    own_key: bool = False
+
+
 class DebateSummary(BaseModel):
     id: str
     title: str | None
+    topic: str = ""
     status: str
     media_status: str = "none"
     created_at: datetime
+    ended_at: datetime | None = None
     totals: DebateTotals = Field(default_factory=DebateTotals)
+    is_public: bool = False
+    slug: str | None = None
+    category: str | None = None
+    views: int = 0
+    duration_ms: int | None = None
+    outputs: list[str] = Field(default_factory=list)
+    verdict: VerdictOut | None = None
+    participants: list[ParticipantOut] = Field(default_factory=list)
 
 
 class DebateSettingsOut(BaseModel):
@@ -170,8 +274,47 @@ class DebateDetail(BaseModel):
     totals: DebateTotals = Field(default_factory=DebateTotals)
     participants: list[ParticipantOut]
     turns: list[TurnOut]
+    user_id: str | None = None
+    author_name: str | None = None
+    is_owner: bool = False
+    is_public: bool = False
+    slug: str | None = None
+    share_url: str | None = None
+    category: str | None = None
+    views: int = 0
+    published_at: datetime | None = None
+    verdict: VerdictOut | None = None
+    media_plan: MediaPlan | None = None
+    duration_ms: int | None = None
+    outputs: list[str] = Field(default_factory=list)
+    billing: BillingOut = Field(default_factory=BillingOut)
+    # Full stored configuration; only sent to the owner (drafts re-open in the wizard).
+    config: DebateConfig | None = None
 
 
 class StopDebateResponse(BaseModel):
     debate_id: str
     status: str
+
+
+# --- Gallery ---
+class GalleryItem(BaseModel):
+    id: str
+    slug: str
+    title: str | None
+    topic: str
+    language: str
+    category: str | None = None
+    author_name: str | None = None
+    views: int = 0
+    duration_ms: int | None = None
+    has_media: bool = False
+    verdict: VerdictOut | None = None
+    participants: list[ParticipantOut] = Field(default_factory=list)
+    published_at: datetime | None = None
+
+
+class GalleryResponse(BaseModel):
+    items: list[GalleryItem]
+    total: int
+    categories: list[str] = Field(default_factory=lambda: list(GALLERY_CATEGORIES))

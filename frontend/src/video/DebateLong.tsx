@@ -5,7 +5,7 @@ import { Background } from './components/Background';
 import { Captions } from './components/Captions';
 import { EndCard, IntroCard, RoundChip, TopicBanner, VerdictCard } from './components/Chrome';
 import { SpeakerCard } from './components/SpeakerCard';
-import { INTRO_MS } from './constants';
+import { ACCENT, INTRO_MS } from './constants';
 import { frameToMs, msToFrame, segmentAt } from './utils';
 
 export interface DebateProps {
@@ -28,7 +28,7 @@ export const DebateLong = ({ timeline, mediaBase }: DebateProps) => {
   const hostActive = active?.role === 'moderator' || active?.role === 'judge';
   const inIntro = ms < 0;
   const inOutro = ms >= timeline.total_ms;
-  const accent = active?.color ?? '#22d3ee';
+  const accent = active?.color ?? ACCENT;
   const cardWidth = debaters.length > 2 ? 320 : 420;
   const cardGap = debaters.length > 2 ? 60 : 320;
 

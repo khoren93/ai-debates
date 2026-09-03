@@ -5,9 +5,10 @@ from typing import Any
 from app.schemas.timeline import TimelineSpeaker
 from app.services.media.script import spoken_speaker_name
 
+# Mirrors frontend/src/lib/format.ts (DEBATER_COLORS, HOST_COLOR, JUDGE_COLOR).
 PALETTE: tuple[str, ...] = (
-    "#22D3EE",
-    "#F97316",
+    "#6C9CFF",
+    "#FF7A66",
     "#A78BFA",
     "#34D399",
     "#F472B6",
@@ -16,8 +17,8 @@ PALETTE: tuple[str, ...] = (
     "#FBBF24",
 )
 MASCOTS: tuple[str, ...] = ("orb", "bolt", "cube")
-MODERATOR_COLOR = "#9CA3AF"
-JUDGE_COLOR = "#FBBF24"
+MODERATOR_COLOR = "#FFC46B"
+JUDGE_COLOR = "#D9FF3D"
 
 
 def short_model_name(model_id: str) -> str:

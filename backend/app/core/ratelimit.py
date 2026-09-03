@@ -56,6 +56,17 @@ async def enforce_debate_create_limit(request: Request) -> None:
     )
 
 
+async def enforce_login_limit(request: Request) -> None:
+    """Cap login/registration attempts per client IP per hour."""
+    await enforce_limit(
+        request,
+        bucket="login",
+        limit=settings.LOGIN_RATE_LIMIT,
+        window_seconds=WINDOW_SECONDS,
+        what="sign-in attempts",
+    )
+
+
 async def enforce_media_create_limit(request: Request) -> None:
     """Cap media (TTS) builds on the system key per client IP per day."""
     await enforce_limit(

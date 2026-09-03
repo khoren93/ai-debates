@@ -1,15 +1,15 @@
-# 🤖 AI Debates
+# 🤖 AI Debates · Debatr
 
-> **Watch Artificial Intelligence clash in real-time debates on any topic.**
+> **Two AIs. One topic. A video in minutes.**
 
 ![Project Status](https://img.shields.io/badge/status-active-success.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
 ![VS Code](https://img.shields.io/badge/Made%20in-VS%20Code-0078d7.svg?style=flat&logo=visual-studio-code&logoColor=white)
 
-**AI Debates** is a full-stack platform that orchestrates structured debates between multiple AI personas. Powered by **OpenRouter**, it allows you to pit over **600+ LLMs** (including **GPT-5**, **Gemini 3**, **Claude 3.7**, **DeepSeek R1**) against each other, assigning them custom roles, personalities, and stances.
+**Debatr** (the AI Debates studio) is a full-stack service that orchestrates structured debates between AI personas and turns them into content. Powered by **OpenRouter**, it lets you pit **hundreds of LLMs** against each other with custom roles, personalities and stances, watch the debate stream live, get a judge's verdict, and render a **16:9 YouTube video plus a 9:16 Short** right in the browser.
 
-Watch the conversation unfold in real-time as a Moderator AI guides the discussion through opening statements, rebuttals, and closing arguments.
+Users sign up, receive welcome credits, buy more with **Stripe**, keep a library of their debates and can publish them to a **public gallery** with share links.
 
 > **🚀 Live Demo Version is Coming Soon!**
 
@@ -19,12 +19,15 @@ Watch the conversation unfold in real-time as a Moderator AI guides the discussi
 
 ## ✨ Key Features
 
-- **🎭 Custom Personas**: Create detailed debaters with specific voices, biases, and knowledge bases.
-- **⚔️ LLM vs LLM**: Mix and match models. Have **Claude 3 Opus** debate **GPT-4o** on philosophy.
-- **⚡ Real-time Streaming**: Watch the debate generate token-by-token with live updates.
-- **⚖️ AI Moderator**: An automated judge manages the flow, ensures rules are followed, and delivers a final verdict.
-- **📊 Analytics**: Track token usage, cost per debate, and logical fallacy analysis.
-- **🐳 Dockerized**: Fully containerized setup for easy deployment.
+- **🧭 4-step wizard**: topic → speakers (model, neural voice, persona per speaker) → voice engine, outputs and quality → review with a cost/length estimate.
+- **⚔️ LLM vs LLM**: Mix and match models. Have **Claude** debate **GPT** on philosophy while **Gemini** moderates.
+- **⚡ Real-time streaming**: watch the debate generate token-by-token, stop it at any moment.
+- **⚖️ Structured verdict**: the judge names a winner (or a draw), with per-debater feedback shown in the UI and on the video end card.
+- **🎙️ Neural voices**: ElevenLabs (premium, emotion tags) or free Edge voices with word timestamps, mixed MP3 and karaoke transcript.
+- **🎬 Video in the browser**: 16:9 episode and 9:16 Shorts (LLM-picked highlights with a hook) rendered with Remotion and WebCodecs — no server encoding.
+- **👤 Accounts & credits**: email sign-up with welcome credits, Stripe top-ups, a ledger of every charge, an optional personal OpenRouter key that bypasses credits.
+- **📚 Library & gallery**: drafts, filters, search; publish finished debates with a share link (`/d/{slug}`) and view counts.
+- **🐳 Dockerized**: Postgres, Redis, API, workers and a Caddy-served frontend.
 
 ## 🛠️ Tech Stack
 
@@ -33,13 +36,16 @@ Watch the conversation unfold in real-time as a Moderator AI guides the discussi
 - **Database**: PostgreSQL (async SQLAlchemy 2 + Alembic migrations)
 - **Queue**: Redis & RQ (Redis Queue) for reliable task orchestration
 - **AI Integration**: [OpenRouter](https://openrouter.ai/) API (streaming, token & cost accounting)
+- **Voices & media**: ElevenLabs / edge-tts, ffmpeg mixing, timeline contract for the browser renderer
+- **Accounts & payments**: session cookie login (bcrypt), encrypted personal keys (Fernet), Stripe Checkout + webhooks
 - **Quality**: ruff, pyright, pytest
 
 ### Frontend
 - **Framework**: [React 19](https://react.dev/) + [Vite 8](https://vite.dev/) + TypeScript
-- **Styling**: Tailwind CSS 4
+- **Styling**: Tailwind CSS 4 with the Debatr design tokens (dark studio theme)
 - **State/Routing**: React Router, Axios
 - **Streaming**: Server-Sent Events (SSE)
+- **Video**: Remotion Player + `@remotion/web-renderer` (MP4 encoded in the visitor's browser)
 
 ### DevOps
 - **Containers**: Docker Compose (Postgres, Redis, API, worker, Caddy)
@@ -64,6 +70,7 @@ Follow these steps to get a copy up and running locally or on your server.
    cp .env.example .env
    ```
    For local testing you only need to set `OPENROUTER_API_KEY`. Keep `DOMAIN_NAME=localhost`.
+   Set `DEV_FAKE_PAYMENTS=true` to top up credits instantly without Stripe while developing.
 
 3. **Run**
    ```bash
@@ -142,15 +149,28 @@ cd frontend && npm run check && npm run build
 
 ## 📖 Usage
 
-1. Open the web interface at `https://your-domain.com` (or `http://localhost`).
-2. Click **"Create Debate"**.
-3. Enter a **Topic** (e.g., "Is AI sentient?").
-4. Configure your **Participants**:
-   - **Debater 1**: "Optimist Prime" (Model: GPT-4o)
-   - **Debater 2**: "Skeptical Sam" (Model: Claude 3.5 Sonnet)
-   - **Moderator**: (Model: Gemini Pro)
-5. Set the **Intensity** and **Rounds**.
-6. Hit **Start Debate** and watch the magic happen!
+1. Open the web interface at `https://your-domain.com` (or `http://localhost`) and create an account
+   (new accounts receive `SIGNUP_BONUS_USD` of credits).
+2. Click **"+ New debate"** and walk through the wizard:
+   - **Topic**: type a question or pick one from the library, choose language, rounds and reply length.
+   - **Speakers**: a host plus two or more debaters, each with a model, a neural voice and a persona.
+   - **Voice & format**: spoken or written style, free Edge or premium ElevenLabs voices, which outputs
+     to produce (audio, 16:9 video, 9:16 Short) and the render quality.
+   - **Review**: the estimate shows cost, length, turns and your credits after the run.
+3. Hit **Start the debate** and watch it stream live. When it finishes the verdict is scored and the
+   audio track is built automatically; open the debate to render the MP4s in your browser.
+4. **Share**: publish the debate to the gallery and copy the share link.
+5. **Account**: top up credits (Stripe), see this month's usage, store a personal OpenRouter key so paid
+   models run on your own account instead of credits.
+
+### 💳 Credits
+
+- Every run charges the OpenRouter cost reported for the debate × `CREDIT_MARKUP` once it finishes.
+- Premium voices on the system ElevenLabs key cost `TTS_CREDIT_PRICE_PER_1K_CHARS` per 1,000 characters.
+- Free models and free Edge voices cost nothing; a personal OpenRouter key makes model usage free.
+- Top-ups go through Stripe Checkout (`STRIPE_SECRET_KEY`, webhook `/api/billing/webhook` with the
+  `checkout.session.completed` event and `STRIPE_WEBHOOK_SECRET`). Every movement is recorded in the
+  `credit_transactions` ledger and visible on the Account page and in the admin panel.
 
 ---
 
@@ -168,9 +188,18 @@ The system uses an event-driven architecture to handle long-running LLM generati
    per turn, and publishes events to Redis Pub/Sub. A debate can be stopped at any time from the UI.
 5. **Frontend**: Subscribes to `GET /api/debates/{id}/stream` (SSE) and renders turns token-by-token.
    Finished debates are served straight from the database.
+6. **Verdict & billing**: after the judge's turn a cheap model structures the verdict (winner, headline,
+   feedback). At the terminal state the worker charges the owner's credits and, if the wizard asked for
+   media, queues the audio build on the `media` queue.
+7. **Media**: the media worker voices every turn (cached by content hash), mixes the track with ffmpeg,
+   picks highlights for Shorts and writes `timeline.json`. The browser renders MP4s from that timeline.
+8. **Accounts**: the login lives in the signed session cookie; personal OpenRouter keys are stored
+   encrypted and only ever handed to the worker through Redis for the duration of a run.
 
-**Configuration** (see `.env.example`): `OPENROUTER_API_KEY`, `ALLOWED_ORIGINS`, `DEBATE_CREATE_RATE_LIMIT`
-(debates per IP per hour), `TURN_JOB_TIMEOUT`, `ADMIN_USER` / `ADMIN_PASSWORD`, `SECRET_KEY`.
+**Configuration** (see `.env.example`): `OPENROUTER_API_KEY`, `ELEVENLABS_API_KEY`, `ALLOWED_ORIGINS`,
+`SIGNUP_BONUS_USD`, `CREDIT_MARKUP`, `TTS_CREDIT_PRICE_PER_1K_CHARS`, `TOPUP_AMOUNTS_USD`,
+`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (or `DEV_FAKE_PAYMENTS`), `DEBATE_CREATE_RATE_LIMIT`,
+`LOGIN_RATE_LIMIT`, `TURN_JOB_TIMEOUT`, `MEDIA_JOB_TIMEOUT`, `ADMIN_USER` / `ADMIN_PASSWORD`, `SECRET_KEY`.
 
 ---
 
@@ -181,6 +210,8 @@ The system uses an event-driven architecture to handle long-running LLM generati
 - [x] **Video**: 16:9 debate video and 9:16 shorts rendered in the browser (Remotion).
 - [ ] **User Voting**: Let the audience decide the winner.
 - [x] **Export Transcripts**: Save debates as Markdown.
+- [x] **Accounts & credits**: sign-up, Stripe top-ups, ledger, personal OpenRouter key.
+- [x] **Public gallery**: publish debates with share links.
 - [ ] **PDF Export**: Nicely formatted transcript downloads.
 - [ ] **Multiplayer Mode**: Human vs AI debates.
 - [ ] **Local LLM Support**: Integration with Ollama for offline debates.

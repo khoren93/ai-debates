@@ -1,18 +1,44 @@
 import { api } from './client';
-import type { CreateDebateResponse, DebateConfig, DebateDetail, DebateSummary } from './types';
+import type {
+  CreateDebateResponse,
+  DebateConfig,
+  DebateDetail,
+  DebateSummary,
+  Estimate,
+  PublishResponse,
+} from './types';
 
-export const listDebates = (limit = 50) =>
-  api.get<DebateSummary[]>('/debates', { params: { limit } }).then((r) => r.data);
+export const listDebates = (params: { status?: string; q?: string; limit?: number; offset?: number } = {}) =>
+  api.get<DebateSummary[]>('/debates', { params: { limit: 200, ...params } }).then((r) => r.data);
 
-export const getDebate = (id: string) =>
-  api.get<DebateDetail>(`/debates/${id}`).then((r) => r.data);
+export const getDebate = (id: string) => api.get<DebateDetail>(`/debates/${id}`).then((r) => r.data);
 
 export const createDebate = (config: DebateConfig) =>
   api.post<CreateDebateResponse>('/debates', config).then((r) => r.data);
 
+export const updateDraft = (id: string, config: DebateConfig) =>
+  api.patch<CreateDebateResponse>(`/debates/${id}`, config).then((r) => r.data);
+
+export const startDraft = (id: string, userProviderKey?: string) =>
+  api
+    .post<CreateDebateResponse>(`/debates/${id}/start`, userProviderKey ? { user_provider_key: userProviderKey } : {})
+    .then((r) => r.data);
+
+export const estimateDebate = (config: DebateConfig) =>
+  api.post<Estimate>('/debates/estimate', config).then((r) => r.data);
+
 export const stopDebate = (id: string) =>
   api.post<{ debate_id: string; status: string }>(`/debates/${id}/stop`).then((r) => r.data);
 
-export const deleteDebate = (id: string) => api.delete(`/debates/${id}`);
+export const deleteDebate = (id: string) => api.delete(`/debates/${id}`).then(() => undefined);
+
+export const publishDebate = (id: string, category: string | null) =>
+  api.post<PublishResponse>(`/debates/${id}/publish`, { category }).then((r) => r.data);
+
+export const unpublishDebate = (id: string) =>
+  api.delete<PublishResponse>(`/debates/${id}/publish`).then((r) => r.data);
+
+export const reportRender = (id: string, kind: 'long' | 'short') =>
+  api.post<{ renders: Record<string, number> }>(`/debates/${id}/renders`, { kind }).then((r) => r.data);
 
 export const debateStreamUrl = (id: string) => `${api.defaults.baseURL}/debates/${id}/stream`;

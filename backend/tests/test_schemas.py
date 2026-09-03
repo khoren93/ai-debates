@@ -48,3 +48,31 @@ def test_invalid_role_and_length_preset():
         DebateConfig.model_validate({"topic": "t", "participants": [{**DEB, "role": "judge"}]})
     with pytest.raises(ValidationError):
         DebateConfig.model_validate({"topic": "t", "participants": [DEB], "length_preset": "huge"})
+
+
+def test_media_plan_defaults_and_persisted_excludes_transient_fields():
+    cfg = DebateConfig.model_validate(
+        {
+            "topic": "t",
+            "participants": [MOD, DEB],
+            "media_plan": {"provider": "edge"},
+            "draft": True,
+            "user_provider_key": "sk-or-secret",
+        }
+    )
+    assert cfg.media_plan is not None
+    assert cfg.media_plan.outputs == ["audio", "video", "short"]
+    assert cfg.media_plan.quality == "1080p"
+    stored = cfg.persisted()
+    assert "user_provider_key" not in stored
+    assert "draft" not in stored
+    assert stored["media_plan"]["provider"] == "edge"
+
+
+def test_publish_request_category_validation():
+    from app.schemas.schemas import PublishRequest
+
+    assert PublishRequest(category=" Tech ").category == "tech"
+    assert PublishRequest(category="").category is None
+    with pytest.raises(ValidationError):
+        PublishRequest(category="sports")

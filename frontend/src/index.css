@@ -1,11 +1,121 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/*
+ * Debatr design tokens (dark studio theme from the Claude Design mockup).
+ * Fonts are loaded from Google Fonts in index.html.
+ */
 @theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif,
-    "Apple Color Emoji", "Segoe UI Emoji";
+  --font-sans: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Bricolage Grotesque", "DM Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-ink: #0a0b0f; /* page background */
+  --color-ink-2: #0c0d12; /* sidebar / player background */
+  --color-surface: #12141b; /* cards */
+  --color-surface-2: #181b24; /* nested cards, hover */
+  --color-surface-3: #1e212b; /* tracks, chips */
+  --color-surface-4: #262a36;
+  --color-line: rgb(255 255 255 / 0.07);
+  --color-line-2: rgb(255 255 255 / 0.12);
+  --color-line-3: rgb(255 255 255 / 0.18);
+
+  --color-text: #f2f3f7;
+  --color-text-2: #d5d8e2;
+  --color-text-3: #b4b8c6;
+  --color-muted: #8b90a0;
+  --color-dim: #5c6170;
+
+  --color-accent: #d9ff3d;
+  --color-accent-hover: #edff8a;
+  --color-pro: #6c9cff;
+  --color-con: #ff7a66;
+  --color-host: #ffc46b;
+  --color-ok: #52d889;
+  --color-danger: #ff4d4d;
+  --color-violet: #a78bfa;
+  --color-mint: #34d399;
+
+  --radius-card: 18px;
+  --radius-panel: 20px;
+  --radius-field: 12px;
+
+  --animate-rise: rise 0.4s ease both;
+  --animate-pulse-dot: pulse-dot 1.6s infinite;
+  --animate-bars: bars 1s infinite;
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @keyframes bars {
+    0%,
+    100% {
+      transform: scaleY(0.3);
+    }
+    50% {
+      transform: scaleY(1);
+    }
+  }
 }
 
 html {
+  color-scheme: dark;
   scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-4);
+  border-radius: 8px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-dim);
+}
+
+/* Native selects on a dark background */
+select option {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+@utility text-balance {
+  text-wrap: balance;
+}
+@utility text-pretty {
+  text-wrap: pretty;
 }

@@ -1,0 +1,37 @@
+import { initialOf } from '../../lib/format';
+
+const PALETTE = ['#6C9CFF', '#D9FF3D', '#FF7A66', '#FFC46B', '#A78BFA', '#34D399', '#F472B6', '#22D3EE'];
+
+const hash = (s: string) => {
+  let h = 7;
+  for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h;
+};
+
+/** Gradient avatar derived from a seed (user avatars). */
+// eslint-disable-next-line react-refresh/only-export-components
+export const avatarGradient = (seed: string) => {
+  const h = hash(seed || 'debatr');
+  const a = PALETTE[h % PALETTE.length];
+  const b = PALETTE[(h >> 3) % PALETTE.length];
+  return `linear-gradient(135deg, ${a}, ${b === a ? PALETTE[(h + 1) % PALETTE.length] : b})`;
+};
+
+export const Avatar = ({ seed, size = 28, className = '', rounded = 'full' }: { seed: string; size?: number; className?: string; rounded?: 'full' | 'lg' }) => (
+  <span
+    className={`inline-block shrink-0 ${rounded === 'full' ? 'rounded-full' : 'rounded-[18px]'} ${className}`}
+    style={{ width: size, height: size, background: avatarGradient(seed) }}
+    aria-hidden="true"
+  />
+);
+
+/** Coloured square with the speaker's initial (transcript, lineup, review). */
+export const SpeakerBadge = ({ name, color, size = 36, imageUrl, className = '' }: { name: string | null | undefined; color: string; size?: number; imageUrl?: string | null; className?: string }) => (
+  <span
+    className={`grid shrink-0 place-items-center overflow-hidden font-extrabold text-ink ${className}`}
+    style={{ width: size, height: size, borderRadius: Math.round(size * 0.28), background: color, fontSize: Math.round(size * 0.36) }}
+    aria-hidden="true"
+  >
+    {imageUrl ? <img src={imageUrl} alt="" className="size-full object-cover" /> : initialOf(name)}
+  </span>
+);

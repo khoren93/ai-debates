@@ -65,6 +65,21 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "secret-key-for-sessions-change-me"
     ALLOWED_ORIGINS: str = "http://localhost,http://localhost:5173,http://localhost:3000"
 
+    # Accounts, credits and billing
+    SESSION_MAX_AGE: int = 60 * 60 * 24 * 30  # seconds the login cookie stays valid
+    LOGIN_RATE_LIMIT: int = 30  # login/register attempts per IP per hour (0 disables)
+    SIGNUP_BONUS_USD: float = 1.0  # welcome credits for every new account (0 disables)
+    # Multiplier applied to the provider cost (OpenRouter usage) when charging credits.
+    CREDIT_MARKUP: float = 1.2
+    # Premium (ElevenLabs) voices on the system key, charged to credits per 1000 characters.
+    TTS_CREDIT_PRICE_PER_1K_CHARS: float = 0.15
+    TOPUP_AMOUNTS_USD: str = "5,10,25"
+    STRIPE_SECRET_KEY: str | None = None
+    STRIPE_WEBHOOK_SECRET: str | None = None
+    STRIPE_CURRENCY: str = "usd"
+    # Development only: top-ups are credited instantly without Stripe.
+    DEV_FAKE_PAYMENTS: bool = False
+
     model_config = SettingsConfigDict(
         env_file=[".env", "../.env"],
         env_ignore_empty=True,
@@ -88,6 +103,24 @@ class Settings(BaseSettings):
     @cached_property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+
+    @cached_property
+    def topup_amounts(self) -> list[int]:
+        amounts: list[int] = []
+        for raw in self.TOPUP_AMOUNTS_USD.split(","):
+            raw = raw.strip()
+            if raw.isdigit() and int(raw) > 0:
+                amounts.append(int(raw))
+        return amounts or [5, 10, 25]
+
+    @property
+    def payments_mode(self) -> str:
+        """stripe | dev (instant fake top-ups) | disabled."""
+        if self.STRIPE_SECRET_KEY:
+            return "stripe"
+        if self.DEV_FAKE_PAYMENTS and not self.is_production:
+            return "dev"
+        return "disabled"
 
     @property
     def is_production(self) -> bool:

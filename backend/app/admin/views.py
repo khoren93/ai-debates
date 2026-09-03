@@ -1,12 +1,71 @@
 from sqladmin import ModelView
 
-from app.models.models import Debate, DebateParticipant, Session, Turn
+from app.models.models import CreditTransaction, Debate, DebateParticipant, Session, Turn, User
+
+
+class UserAdmin(ModelView, model=User):
+    column_list = [
+        User.id,
+        User.email,
+        User.display_name,
+        User.plan,
+        User.credits_usd,
+        User.is_active,
+        User.created_at,
+        User.last_login_at,
+    ]
+    column_searchable_list = [User.email, User.display_name]
+    column_sortable_list = [User.created_at, User.credits_usd, User.last_login_at]
+    column_default_sort = (User.created_at, True)
+    column_details_exclude_list = [User.password_hash, User.openrouter_key_enc]
+    form_excluded_columns = [
+        User.password_hash,
+        User.openrouter_key_enc,
+        User.debates,
+        User.transactions,
+    ]
+    can_create = False
+    can_delete = True
+    name = "User"
+    name_plural = "Users"
+    icon = "fa-solid fa-user"
+
+
+class CreditTransactionAdmin(ModelView, model=CreditTransaction):
+    column_list = [
+        CreditTransaction.id,
+        CreditTransaction.user_id,
+        CreditTransaction.kind,
+        CreditTransaction.amount_usd,
+        CreditTransaction.balance_after_usd,
+        CreditTransaction.description,
+        CreditTransaction.provider,
+        CreditTransaction.created_at,
+    ]
+    column_searchable_list = [CreditTransaction.kind, CreditTransaction.provider_ref]
+    column_sortable_list = [CreditTransaction.created_at, CreditTransaction.amount_usd]
+    column_default_sort = (CreditTransaction.created_at, True)
+    can_create = False
+    can_edit = False
+    can_delete = False
+    name = "Credit transaction"
+    name_plural = "Credit transactions"
+    icon = "fa-solid fa-coins"
 
 
 class DebateAdmin(ModelView, model=Debate):
-    column_list = [Debate.id, Debate.title, Debate.status, Debate.created_at, Debate.ended_at]
-    column_searchable_list = [Debate.id, Debate.title, Debate.status]
-    column_sortable_list = [Debate.created_at, Debate.status]
+    column_list = [
+        Debate.id,
+        Debate.title,
+        Debate.status,
+        Debate.user_id,
+        Debate.is_public,
+        Debate.media_status,
+        Debate.created_at,
+        Debate.ended_at,
+    ]
+    column_searchable_list = [Debate.id, Debate.title, Debate.status, Debate.slug]
+    column_sortable_list = [Debate.created_at, Debate.status, Debate.views]
     column_default_sort = (Debate.created_at, True)
     can_delete = True
     name = "Debate"
@@ -48,6 +107,6 @@ class TurnAdmin(ModelView, model=Turn):
 class SessionAdmin(ModelView, model=Session):
     column_list = [Session.id, Session.created_at, Session.last_seen_at]
     can_delete = False
-    name = "Session"
-    name_plural = "Sessions"
-    icon = "fa-solid fa-user"
+    name = "Legacy session"
+    name_plural = "Legacy sessions"
+    icon = "fa-solid fa-clock-rotate-left"

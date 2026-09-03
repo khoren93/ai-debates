@@ -6,6 +6,7 @@
 - POST /api/debates/{id}/media            start (or restart) the audio build
 - DELETE /api/debates/{id}/media          remove generated files
 Video is rendered in the browser from the timeline; the server never encodes video.
+Premium voices on the system key are charged to the owner's credits.
 """
 
 import logging
@@ -17,14 +18,17 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from redis.exceptions import RedisError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
+from app.api.serializers import can_manage, can_view
+from app.core.auth import get_current_user, is_admin_session
 from app.core.config import TERMINAL_DEBATE_STATUSES, settings
 from app.core.db import get_db
-from app.core.ratelimit import enforce_media_create_limit
 from app.core.redis import get_async_redis, tts_key_key
-from app.models.models import Debate
+from app.models.models import Debate, Turn, User
 from app.schemas.media import (
     DebateMediaOut,
     GenerateMediaRequest,
@@ -37,9 +41,11 @@ from app.schemas.media import (
     VoiceOut,
     VoicesResponse,
 )
+from app.services.credits import tts_charge_usd
 from app.services.media.ffmpeg import ffmpeg_available
 from app.services.media.languages import language_code
 from app.services.media.paths import MediaPaths, public_url
+from app.services.media.script import clean_markdown
 from app.services.media.tts import PROVIDER_NAMES, SpeakerRef, TTSError, get_provider
 from app.services.media.tts.elevenlabs import MODELS as ELEVENLABS_MODELS
 from app.services.queue_manager import enqueue_media_build
@@ -55,9 +61,19 @@ def _parse_uuid(debate_id: str) -> uuid.UUID:
         raise HTTPException(status_code=400, detail="Invalid debate id") from e
 
 
+async def _load(db: AsyncSession, debate_id: str) -> Debate:
+    stmt = (
+        select(Debate).options(selectinload(Debate.user)).where(Debate.id == _parse_uuid(debate_id))
+    )
+    debate = (await db.execute(stmt)).scalar_one_or_none()
+    if debate is None:
+        raise HTTPException(status_code=404, detail="Debate not found")
+    return debate
+
+
 def _is_trusted(request: Request, media_token: str | None) -> bool:
-    """Admin session or shared token bypass the daily limit on the system key."""
-    if request.session.get("token") == "authenticated":
+    """Admin session or shared token: premium voices without credits."""
+    if is_admin_session(request):
         return True
     return bool(
         settings.MEDIA_API_TOKEN
@@ -139,10 +155,14 @@ async def media_voices(
     provider: str = Query("edge"),
     language: str = Query("English"),
     debate_id: str | None = Query(None),
+    participants: int = Query(0, ge=0, le=8, description="debaters, when no debate id is given"),
     x_tts_key: str | None = Header(default=None, alias="X-TTS-Key"),
     db: AsyncSession = Depends(get_db),
 ) -> VoicesResponse:
-    """Voices for a provider, plus a default assignment for the debate's speakers."""
+    """Voices for a provider, plus a default assignment for the debate's speakers.
+
+    Without a debate id (the create wizard) pass `participants` = number of debaters to get
+    defaults for a moderator, that many debaters and the judge."""
     if provider not in PROVIDER_NAMES:
         raise HTTPException(status_code=400, detail="Unknown provider")
     refs: list[SpeakerRef] = []
@@ -153,6 +173,10 @@ async def media_voices(
         conf = debate.config_json or {}
         refs = speaker_refs(conf.get("participants", []))
         language = conf.get("language") or language
+    elif participants > 0:
+        refs = speaker_refs(
+            [{"role": "moderator"}] + [{"role": "debater"} for _ in range(participants)]
+        )
     code = language_code(language)
     tts = get_provider(provider, api_key=x_tts_key)
     if not tts.available():
@@ -182,11 +206,25 @@ async def media_voices(
 
 
 @router.get("/debates/{debate_id}/media", response_model=DebateMediaOut)
-async def get_debate_media(debate_id: str, db: AsyncSession = Depends(get_db)) -> DebateMediaOut:
-    debate = await db.get(Debate, _parse_uuid(debate_id))
-    if not debate:
-        raise HTTPException(status_code=404, detail="Debate not found")
+async def get_debate_media(
+    debate_id: str,
+    request: Request,
+    viewer: User | None = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DebateMediaOut:
+    debate = await _load(db, debate_id)
+    if not can_view(debate, viewer, request):
+        raise HTTPException(status_code=403, detail="This debate is private")
     return media_out(debate)
+
+
+async def _spoken_chars(db: AsyncSession, debate: Debate) -> int:
+    turns = (await db.execute(select(Turn).where(Turn.debate_id == debate.id))).scalars().all()
+    return sum(
+        len(clean_markdown(t.text or ""))
+        for t in turns
+        if t.text and not t.error and not t.text.strip().startswith("[Error")
+    )
 
 
 @router.post(
@@ -197,24 +235,37 @@ async def generate_debate_media(
     body: GenerateMediaRequest,
     request: Request,
     x_media_token: str | None = Header(default=None, alias="X-Media-Token"),
+    user: User | None = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> MediaAccepted:
     """Queue the audio build (TTS per turn, mixing, timeline). Video is rendered client-side."""
-    debate = await db.get(Debate, _parse_uuid(debate_id))
-    if not debate:
-        raise HTTPException(status_code=404, detail="Debate not found")
+    debate = await _load(db, debate_id)
+    if not can_manage(debate, user, request):
+        raise HTTPException(status_code=403, detail="You do not own this debate")
     if debate.status not in TERMINAL_DEBATE_STATUSES:
         raise HTTPException(status_code=409, detail="The debate has not finished yet")
     if debate.media_status in ("queued", "running"):
         raise HTTPException(status_code=409, detail="A media build is already in progress")
     if body.provider not in PROVIDER_NAMES:
         raise HTTPException(status_code=400, detail="Unknown provider")
+    own_tts_key = bool(body.user_tts_key)
     if body.provider == "elevenlabs":
-        if not (body.user_tts_key or settings.ELEVENLABS_API_KEY):
+        if not (own_tts_key or settings.ELEVENLABS_API_KEY):
             raise HTTPException(status_code=409, detail="ElevenLabs key is not configured")
-        # The system key is paid: limit anonymous use. Own keys and trusted callers are free.
-        if not body.user_tts_key and not _is_trusted(request, x_media_token):
-            await enforce_media_create_limit(request)
+        # The system key is paid: charge the owner's credits (trusted callers are exempt).
+        if not own_tts_key and not _is_trusted(request, x_media_token):
+            if user is None:
+                raise HTTPException(status_code=401, detail="Sign in to use premium voices")
+            chars = await _spoken_chars(db, debate)
+            needed = float(tts_charge_usd(chars))
+            if needed > float(user.credits_usd or 0):
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=(
+                        f"Premium voices for this debate cost about ${needed:.2f}; you have "
+                        f"${float(user.credits_usd or 0):.2f}. Top up or use the free Edge voices."
+                    ),
+                )
 
     options = MediaOptions(provider=body.provider, model_id=body.model_id, voices=body.voices)
     state = dict(debate.media_json or {})
@@ -222,6 +273,8 @@ async def generate_debate_media(
         {
             "options": options.model_dump(),
             "force": body.force,
+            "own_tts_key": own_tts_key,
+            "auto": False,
             "step": "queued",
             "current": 0,
             "total": 0,
@@ -255,10 +308,15 @@ async def generate_debate_media(
 
 
 @router.delete("/debates/{debate_id}/media", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_debate_media(debate_id: str, db: AsyncSession = Depends(get_db)) -> None:
-    debate = await db.get(Debate, _parse_uuid(debate_id))
-    if not debate:
-        raise HTTPException(status_code=404, detail="Debate not found")
+async def delete_debate_media(
+    debate_id: str,
+    request: Request,
+    user: User | None = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    debate = await _load(db, debate_id)
+    if not can_manage(debate, user, request):
+        raise HTTPException(status_code=403, detail="You do not own this debate")
     if debate.media_status == "running":
         raise HTTPException(status_code=409, detail="A media build is in progress")
     paths = MediaPaths(debate_id)

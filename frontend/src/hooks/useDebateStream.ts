@@ -1,6 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { debateStreamUrl } from '../api/debates';
-import type { DebateTerminalEvent, Turn, TurnDeltaEvent, TurnStartedEvent } from '../api/types';
+import type { DebateTerminalEvent, MediaStatus, Turn, TurnDeltaEvent, TurnStartedEvent, VerdictReadyEvent } from '../api/types';
+
+export interface MediaProgressEvent {
+  debate_id: string;
+  media_status: MediaStatus;
+  step: string | null;
+  current: number | null;
+  total: number | null;
+  message: string | null;
+  error: string | null;
+}
 
 export interface StreamHandlers {
   onDebateStarted?: () => void;
@@ -8,6 +18,8 @@ export interface StreamHandlers {
   onTurnDelta?: (e: TurnDeltaEvent) => void;
   onTurnCompleted?: (turn: Turn) => void;
   onTurnError?: (turn: Turn) => void;
+  onVerdictReady?: (e: VerdictReadyEvent) => void;
+  onMediaProgress?: (e: MediaProgressEvent) => void;
   onDebateCompleted?: (e: DebateTerminalEvent) => void;
   onDebateError?: (e: DebateTerminalEvent) => void;
   onDebateStopped?: (e: DebateTerminalEvent) => void;
@@ -21,11 +33,7 @@ const TERMINAL_EVENTS = ['debate_completed', 'debate_error', 'debate_stopped'] a
  * Subscribe to a debate's Server-Sent Events while `enabled` is true.
  * Handlers are read through a ref so the subscription survives re-renders.
  */
-export function useDebateStream(
-  debateId: string | undefined,
-  enabled: boolean,
-  handlers: StreamHandlers,
-) {
+export function useDebateStream(debateId: string | undefined, enabled: boolean, handlers: StreamHandlers) {
   const handlersRef = useRef(handlers);
   useEffect(() => {
     handlersRef.current = handlers;
@@ -34,7 +42,7 @@ export function useDebateStream(
   useEffect(() => {
     if (!debateId || !enabled) return;
 
-    const source = new EventSource(debateStreamUrl(debateId));
+    const source = new EventSource(debateStreamUrl(debateId), { withCredentials: true });
     let wasDisconnected = false;
 
     const on = <T,>(event: string, handler: (payload: T) => void) => {
@@ -63,6 +71,8 @@ export function useDebateStream(
     on<TurnDeltaEvent>('turn_delta', (e) => handlersRef.current.onTurnDelta?.(e));
     on<Turn>('turn_completed', (t) => handlersRef.current.onTurnCompleted?.(t));
     on<Turn>('turn_error', (t) => handlersRef.current.onTurnError?.(t));
+    on<VerdictReadyEvent>('verdict_ready', (e) => handlersRef.current.onVerdictReady?.(e));
+    on<MediaProgressEvent>('media_progress', (e) => handlersRef.current.onMediaProgress?.(e));
 
     const terminal: Record<(typeof TERMINAL_EVENTS)[number], (e: DebateTerminalEvent) => void> = {
       debate_completed: (e) => handlersRef.current.onDebateCompleted?.(e),

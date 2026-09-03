@@ -10,8 +10,24 @@ from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.auth import authentication_backend
-from app.admin.views import DebateAdmin, ParticipantAdmin, SessionAdmin, TurnAdmin
-from app.api import routes_debates, routes_media, routes_models, routes_presets, routes_stream
+from app.admin.views import (
+    CreditTransactionAdmin,
+    DebateAdmin,
+    ParticipantAdmin,
+    SessionAdmin,
+    TurnAdmin,
+    UserAdmin,
+)
+from app.api import (
+    routes_auth,
+    routes_billing,
+    routes_debates,
+    routes_gallery,
+    routes_media,
+    routes_models,
+    routes_presets,
+    routes_stream,
+)
 from app.core.config import settings
 from app.core.db import engine
 from app.core.logging import setup_logging
@@ -51,9 +67,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Sessions (admin login)
+# Signed session cookie: user login (uid) and admin panel login (token).
 app.add_middleware(
-    SessionMiddleware, secret_key=settings.SECRET_KEY, https_only=settings.is_production
+    SessionMiddleware,
+    secret_key=settings.SECRET_KEY,
+    https_only=settings.is_production,
+    same_site="lax",
+    max_age=settings.SESSION_MAX_AGE,
 )
 
 app.add_middleware(
@@ -66,14 +86,19 @@ app.add_middleware(
 
 # Admin panel
 admin = Admin(app, engine, authentication_backend=authentication_backend, base_url="/api/admin")
+admin.add_view(UserAdmin)
+admin.add_view(CreditTransactionAdmin)
 admin.add_view(DebateAdmin)
 admin.add_view(ParticipantAdmin)
 admin.add_view(TurnAdmin)
 admin.add_view(SessionAdmin)
 
 # Routers
+app.include_router(routes_auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(routes_billing.router, prefix="/api/billing", tags=["billing"])
 app.include_router(routes_models.router, prefix="/api/models", tags=["models"])
 app.include_router(routes_presets.router, prefix="/api/presets", tags=["presets"])
+app.include_router(routes_gallery.router, prefix="/api/gallery", tags=["gallery"])
 app.include_router(routes_debates.router, prefix="/api/debates", tags=["debates"])
 app.include_router(routes_stream.router, prefix="/api/debates", tags=["stream"])
 app.include_router(routes_media.router, prefix="/api", tags=["media"])

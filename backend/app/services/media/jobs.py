@@ -31,6 +31,7 @@ from app.schemas.timeline import (
     TimelineVerdict,
     TimelineWord,
 )
+from app.services.credits import charge_media_sync
 from app.services.media import ffmpeg
 from app.services.media.alignment import WordTiming, clamp_words, merge_chunks
 from app.services.media.highlights import (
@@ -238,7 +239,9 @@ def _pick_highlights(
         return fallback_highlights(segments, total_ms), None
 
 
-def _build(db: Session, debate: Debate, options: MediaOptions, force: bool) -> None:
+def _build(db: Session, debate: Debate, options: MediaOptions, force: bool) -> int:
+    """Voice, mix and write the timeline. Returns the characters actually synthesized
+    (cached turns excluded), which is what premium voices are billed on."""
     debate_id = str(debate.id)
     conf: dict[str, Any] = debate.config_json or {}
     participants: list[dict[str, Any]] = conf.get("participants", [])
@@ -380,7 +383,13 @@ def _build(db: Session, debate: Debate, options: MediaOptions, force: bool) -> N
     verdict_turn = next((t for t in turns if t.turn_type == "verdict"), None)
     verdict: TimelineVerdict | None = None
     if verdict_turn is not None:
-        winner = extract_winner(verdict_turn.text, speakers) or match_speaker(winner_name, speakers)
+        # The structured verdict (worker, see services.verdict) is the most reliable source.
+        structured_id = (debate.verdict_json or {}).get("winner_id")
+        winner = (
+            speakers_by_id.get(str(structured_id))
+            if structured_id
+            else extract_winner(verdict_turn.text, speakers) or match_speaker(winner_name, speakers)
+        )
         verdict = TimelineVerdict(
             seq_index=verdict_turn.seq_index,
             winner_id=winner.id if winner else None,
@@ -431,6 +440,7 @@ def _build(db: Session, debate: Debate, options: MediaOptions, force: bool) -> N
             "assets": {"timeline": "timeline.json", "full_mp3": "full.mp3", "full_wav": "full.wav"},
         },
     )
+    return char_cost
 
 
 def build_media_job(debate_id: str) -> None:
@@ -454,7 +464,21 @@ def build_media_job(debate_id: str) -> None:
             started=True,
         )
         try:
-            _build(db, debate, options, force)
+            billed_chars = _build(db, debate, options, force)
+            try:
+                tx = charge_media_sync(
+                    db,
+                    debate,
+                    chars=billed_chars,
+                    provider=options.provider,
+                    own_key=bool(state.get("own_tts_key")),
+                    build_ref=str((debate.media_json or {}).get("finished_at") or int(time.time())),
+                )
+                if tx is not None:
+                    logger.info("Charged %s credits for voices of %s", -tx.amount_usd, debate_id)
+            except Exception:
+                logger.exception("Failed to charge credits for media of %s", debate_id)
+                db.rollback()
         except Exception as e:
             logger.exception("Media build for debate %s failed", debate_id)
             db.rollback()

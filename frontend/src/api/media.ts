@@ -11,11 +11,23 @@ import type {
 export const getMediaCapabilities = () =>
   api.get<MediaCapabilities>('/media/capabilities').then((r) => r.data);
 
-export const getVoices = (provider: TTSProviderName, debateId: string, ttsKey?: string) =>
+/**
+ * Voice catalogue for a provider. Pass a debate id for an existing debate, or the debate
+ * language plus the number of debaters (create wizard) to get default voice assignments.
+ */
+export const getVoices = (
+  provider: TTSProviderName,
+  target: { debateId: string } | { language: string; participants: number },
+  ttsKey?: string,
+) =>
   api
     .get<VoicesResponse>('/media/voices', {
-      params: { provider, debate_id: debateId },
+      params:
+        'debateId' in target
+          ? { provider, debate_id: target.debateId }
+          : { provider, language: target.language, participants: target.participants },
       headers: ttsKey ? { 'X-TTS-Key': ttsKey } : undefined,
+      timeout: 60_000,
     })
     .then((r) => r.data);
 
@@ -23,9 +35,11 @@ export const getDebateMedia = (debateId: string) =>
   api.get<DebateMedia>(`/debates/${debateId}/media`).then((r) => r.data);
 
 export const generateMedia = (debateId: string, body: GenerateMediaRequest) =>
-  api.post<{ debate_id: string; media_status: string; message: string }>(`/debates/${debateId}/media`, body).then((r) => r.data);
+  api
+    .post<{ debate_id: string; media_status: string; message: string }>(`/debates/${debateId}/media`, body)
+    .then((r) => r.data);
 
-export const deleteMedia = (debateId: string) => api.delete(`/debates/${debateId}/media`);
+export const deleteMedia = (debateId: string) => api.delete(`/debates/${debateId}/media`).then(() => undefined);
 
 /** timeline.json lives under /api/media/files, i.e. outside the axios baseURL. */
 export const fetchTimeline = (url: string) => api.get<Timeline>(url, { baseURL: '' }).then((r) => r.data);

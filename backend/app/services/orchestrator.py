@@ -2,6 +2,8 @@
 
 Runs in the worker process only. Uses a blocking SQLAlchemy engine because RQ
 jobs are synchronous; LLM streaming happens inside a short-lived asyncio loop.
+When a debate reaches a terminal state the owner's credits are charged and, if the
+configuration asks for it, the audio build is queued automatically.
 """
 
 import asyncio
@@ -18,6 +20,7 @@ from app.core.redis import get_sync_redis, provider_key_key, stop_flag_key
 from app.core.sync_db import get_sync_session
 from app.models.models import Debate, Turn, utcnow
 from app.services import queue_manager
+from app.services.credits import charge_debate_sync
 from app.services.events import publish_event
 from app.services.openrouter_client import OpenRouterClient, OpenRouterError
 from app.services.prompt_builder import (
@@ -26,6 +29,7 @@ from app.services.prompt_builder import (
     build_verdict_messages,
 )
 from app.services.scheduler import ScheduledTurn, build_schedule, speaker_role_for
+from app.services.verdict import structure_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +88,17 @@ def _history(db: Session, debate_id: uuid.UUID) -> list[dict[str, Any]]:
     ]
 
 
-def _compute_totals(db: Session, debate_id: uuid.UUID) -> dict[str, Any]:
-    turns = db.scalars(select(Turn).where(Turn.debate_id == debate_id)).all()
-    totals = {"tokens_in": 0, "tokens_out": 0, "cost": 0.0, "turns_count": len(turns)}
+def _compute_totals(db: Session, debate: Debate) -> dict[str, Any]:
+    """Token/cost totals over all turns plus the (cheap) verdict analysis call."""
+    turns = db.scalars(select(Turn).where(Turn.debate_id == debate.id)).all()
+    analysis_cost = float((debate.totals_json or {}).get("analysis_cost") or 0.0)
+    totals: dict[str, Any] = {
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cost": analysis_cost,
+        "turns_count": len(turns),
+        "analysis_cost": analysis_cost,
+    }
     for t in turns:
         usage = t.usage_json or {}
         totals["tokens_in"] += int(usage.get("prompt_tokens") or 0)
@@ -94,6 +106,17 @@ def _compute_totals(db: Session, debate_id: uuid.UUID) -> dict[str, Any]:
         totals["cost"] += float(usage.get("cost") or 0.0)
     totals["cost"] = round(totals["cost"], 6)
     return totals
+
+
+def _charge(db: Session, debate: Debate) -> None:
+    """Charge the owner's credits for a finished run (never lets a billing error kill the job)."""
+    try:
+        tx = charge_debate_sync(db, debate)
+        if tx is not None:
+            logger.info("Charged %s credits for debate %s", -tx.amount_usd, debate.id)
+    except Exception:
+        logger.exception("Failed to charge credits for debate %s", debate.id)
+        db.rollback()
 
 
 def _cleanup_keys(debate_id: str) -> None:
@@ -126,8 +149,9 @@ def _fail_debate(db: Session, debate: Debate, message: str) -> None:
     debate.status = "error"
     debate.error_message = message[:2000]
     debate.ended_at = utcnow()
-    debate.totals_json = _compute_totals(db, debate.id)
+    debate.totals_json = _compute_totals(db, debate)
     db.commit()
+    _charge(db, debate)
     _cleanup_keys(str(debate.id))
     publish_event(str(debate.id), "debate_error", {"debate_id": str(debate.id), "message": message})
 
@@ -135,8 +159,9 @@ def _fail_debate(db: Session, debate: Debate, message: str) -> None:
 def _finalize_stopped(db: Session, debate: Debate) -> None:
     debate.status = "stopped"
     debate.ended_at = debate.ended_at or utcnow()
-    debate.totals_json = _compute_totals(db, debate.id)
+    debate.totals_json = _compute_totals(db, debate)
     db.commit()
+    _charge(db, debate)
     _cleanup_keys(str(debate.id))
 
 
@@ -213,6 +238,65 @@ def _save_turn(
     if result.error:
         logger.warning("Turn %s of debate %s failed: %s", seq_index, debate.id, result.error)
     return turn
+
+
+def _store_verdict(db: Session, debate: Debate, verdict_text: str, api_key: str | None) -> None:
+    """Structure the judge's text (winner, headline, feedback) for the UI and the video."""
+    conf: dict[str, Any] = debate.config_json or {}
+    verdict, usage = structure_verdict(
+        conf, verdict_text, model=settings.MEDIA_HIGHLIGHTS_MODEL, api_key=api_key
+    )
+    debate.verdict_json = verdict
+    cost = float((usage or {}).get("cost") or 0.0)
+    if cost:
+        debate.totals_json = {**(debate.totals_json or {}), "analysis_cost": cost}
+    db.commit()
+    publish_event(
+        str(debate.id), "verdict_ready", {"debate_id": str(debate.id), "verdict": verdict}
+    )
+
+
+def _auto_media(db: Session, debate: Debate) -> None:
+    """Queue the audio build when the wizard asked for audio/video outputs."""
+    conf: dict[str, Any] = debate.config_json or {}
+    plan: dict[str, Any] = conf.get("media_plan") or {}
+    outputs = plan.get("outputs") or []
+    if "audio" not in outputs:
+        return
+    provider = str(plan.get("provider") or "edge")
+    voices: dict[str, str] = dict(plan.get("voices") or {})
+    if provider == "elevenlabs" and not settings.ELEVENLABS_API_KEY:
+        provider, voices = "edge", {}  # voice ids are provider-specific
+    state = dict(debate.media_json or {})
+    state.update(
+        {
+            "options": {
+                "provider": provider,
+                "model_id": str(plan.get("model_id") or settings.TTS_DEFAULT_MODEL_ID),
+                "voices": voices,
+            },
+            "force": False,
+            "own_tts_key": False,
+            "auto": True,
+            "step": "queued",
+            "current": 0,
+            "total": 0,
+            "message": "Queued",
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+        }
+    )
+    debate.media_json = state
+    debate.media_status = "queued"
+    db.commit()
+    try:
+        queue_manager.enqueue_media_build(str(debate.id))
+    except Exception:
+        logger.exception("Failed to queue the audio build for debate %s", debate.id)
+        debate.media_status = "error"
+        debate.media_json = {**state, "error": "Job queue unavailable"}
+        db.commit()
 
 
 # --- jobs ------------------------------------------------------------------
@@ -319,6 +403,7 @@ def conduct_verdict_job(debate_id: str, seq_index: int) -> None:
             participants: list[dict[str, Any]] = conf.get("participants", [])
             moderator = next((p for p in participants if p.get("role") == "moderator"), None)
             model_id = (moderator or {}).get("model_id") or settings.DEFAULT_MODEL_ID
+            api_key = _provider_key(debate_id)
 
             publish_event(
                 debate_id,
@@ -333,12 +418,7 @@ def conduct_verdict_job(debate_id: str, seq_index: int) -> None:
             )
             messages = build_verdict_messages(conf, _history(db, debate.id))
             result = _generate(
-                debate_id,
-                seq_index,
-                VERDICT_SPEAKER_NAME,
-                model_id,
-                messages,
-                _provider_key(debate_id),
+                debate_id, seq_index, VERDICT_SPEAKER_NAME, model_id, messages, api_key
             )
             _save_turn(
                 db,
@@ -351,6 +431,12 @@ def conduct_verdict_job(debate_id: str, seq_index: int) -> None:
                 model_id=model_id,
                 result=result,
             )
+            if not result.error and result.text.strip():
+                try:
+                    _store_verdict(db, debate, result.text, api_key)
+                except Exception:
+                    logger.exception("Verdict structuring crashed for debate %s", debate_id)
+                    db.rollback()
             queue_manager.enqueue_finish(debate_id)
         except Exception as e:
             logger.exception("Verdict for debate %s crashed", debate_id)
@@ -371,11 +457,13 @@ def finish_debate_job(debate_id: str) -> None:
 
         debate.status = "completed"
         debate.ended_at = utcnow()
-        debate.totals_json = _compute_totals(db, debate.id)
+        debate.totals_json = _compute_totals(db, debate)
         db.commit()
+        _charge(db, debate)
         _cleanup_keys(debate_id)
         publish_event(
             debate_id,
             "debate_completed",
             {"debate_id": debate_id, "status": "completed", "totals": debate.totals_json},
         )
+        _auto_media(db, debate)

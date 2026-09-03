@@ -1,8 +1,17 @@
-export type DebateStatus = 'queued' | 'running' | 'completed' | 'error' | 'stopped';
+export type DebateStatus = 'draft' | 'queued' | 'running' | 'completed' | 'error' | 'stopped';
 export type ParticipantRole = 'moderator' | 'debater';
 export type LengthPreset = 'very_short' | 'short' | 'medium' | 'long';
+export type OutputStyle = 'markdown' | 'spoken';
+export type MediaStatus = 'none' | 'queued' | 'running' | 'ready' | 'error';
+export type TTSProviderName = 'elevenlabs' | 'edge';
+export type MediaOutput = 'audio' | 'video' | 'short';
+export type VideoQuality = '720p' | '1080p' | '4k';
 
 export const ACTIVE_STATUSES: readonly DebateStatus[] = ['queued', 'running'];
+export const GALLERY_CATEGORIES = ['tech', 'society', 'science', 'culture', 'money', 'fun'] as const;
+export type GalleryCategory = (typeof GALLERY_CATEGORIES)[number];
+
+// --- Models ------------------------------------------------------------------
 
 export interface ModelInfo {
   id: string;
@@ -27,6 +36,8 @@ export interface ValidationResult {
   status: 'ok' | 'error';
   error: string | null;
 }
+
+// --- Debates -----------------------------------------------------------------
 
 export interface TurnUsage {
   prompt_tokens: number;
@@ -65,30 +76,62 @@ export interface Participant {
   avatar: string | null;
 }
 
+export interface VerdictFeedback {
+  speaker_id: string;
+  name: string;
+  text: string;
+}
+
+export interface Verdict {
+  winner_id: string | null;
+  winner_name: string | null;
+  is_draw: boolean;
+  headline: string;
+  feedback: VerdictFeedback[];
+}
+
+export interface MediaPlan {
+  provider: TTSProviderName;
+  model_id: string;
+  voices: Record<string, string>; // speaker id -> provider voice id
+  outputs: MediaOutput[];
+  quality: VideoQuality;
+}
+
 export interface DebateSummary {
   id: string;
   title: string | null;
+  topic: string;
   status: DebateStatus;
-  media_status?: MediaStatus;
+  media_status: MediaStatus;
   created_at: string;
+  ended_at: string | null;
   totals: DebateTotals;
+  is_public: boolean;
+  slug: string | null;
+  category: string | null;
+  views: number;
+  duration_ms: number | null;
+  outputs: MediaOutput[];
+  verdict: Verdict | null;
+  participants: Participant[];
 }
 
 export interface DebateSettings {
   topic: string;
   description: string | null;
   language: string;
-  language_code?: string;
+  language_code: string;
   num_rounds: number;
   length_preset: string;
   intensity: number;
-  output_style?: OutputStyle;
+  output_style: OutputStyle;
 }
 
 export interface DebateDetail {
   id: string;
   status: DebateStatus;
-  media_status?: MediaStatus;
+  media_status: MediaStatus;
   title: string | null;
   error_message: string | null;
   created_at: string;
@@ -98,6 +141,22 @@ export interface DebateDetail {
   totals: DebateTotals;
   participants: Participant[];
   turns: Turn[];
+  user_id: string | null;
+  author_name: string | null;
+  is_owner: boolean;
+  is_public: boolean;
+  slug: string | null;
+  share_url: string | null;
+  category: string | null;
+  views: number;
+  published_at: string | null;
+  verdict: Verdict | null;
+  media_plan: MediaPlan | null;
+  duration_ms: number | null;
+  outputs: MediaOutput[];
+  billing: { own_key: boolean };
+  /** Full stored configuration; only present for the owner (drafts re-open in the wizard). */
+  config: DebateConfig | null;
 }
 
 export interface ParticipantConfig {
@@ -116,10 +175,12 @@ export interface DebateConfig {
   language: string;
   participants: ParticipantConfig[];
   debate_preset_id?: string;
-  length_preset: LengthPreset | string;
+  length_preset: LengthPreset;
   num_rounds: number;
   intensity?: number;
   output_style?: OutputStyle;
+  media_plan?: MediaPlan;
+  draft?: boolean;
   user_provider_key?: string;
 }
 
@@ -127,6 +188,115 @@ export interface CreateDebateResponse {
   debate_id: string;
   status: string;
   message: string;
+}
+
+export interface Estimate {
+  turns: number;
+  words: number;
+  tokens_in: number;
+  tokens_out: number;
+  llm_cost_usd: number;
+  tts_chars: number;
+  tts_cost_usd: number;
+  credits_cost_usd: number;
+  duration_ms: number;
+  render_ms: number;
+  own_key: boolean;
+  paid_models: string[];
+  credits_before: number | null;
+  credits_after: number | null;
+  sufficient: boolean;
+}
+
+export interface PublishResponse {
+  is_public: boolean;
+  slug: string | null;
+  share_url: string | null;
+}
+
+// --- Accounts & billing ------------------------------------------------------
+
+export interface User {
+  id: string;
+  email: string;
+  display_name: string;
+  avatar_seed: string;
+  plan: string;
+  credits_usd: number;
+  openrouter_key_masked: string | null;
+  created_at: string;
+}
+
+export type PaymentsMode = 'stripe' | 'dev' | 'disabled';
+
+export interface BillingConfig {
+  topup_amounts: number[];
+  currency: string;
+  payments_mode: PaymentsMode;
+  signup_bonus_usd: number;
+  credit_markup: number;
+  tts_price_per_1k_chars: number;
+  tts_price_per_min: number;
+  elevenlabs_available: boolean;
+}
+
+export interface CheckoutResponse {
+  url: string;
+  instant: boolean;
+}
+
+export interface ConfirmResponse {
+  credited: boolean;
+  amount_usd: number | null;
+  credits_usd: number;
+}
+
+export interface Transaction {
+  id: string;
+  amount_usd: number;
+  balance_after_usd: number;
+  kind: string;
+  description: string | null;
+  debate_id: string | null;
+  provider: string | null;
+  created_at: string;
+}
+
+export interface Usage {
+  period_start: string;
+  debates: number;
+  tokens_in: number;
+  tokens_out: number;
+  voice_ms: number;
+  renders: number;
+  spent_usd: number;
+  topped_up_usd: number;
+  llm_usd: number;
+  tts_usd: number;
+}
+
+// --- Gallery -----------------------------------------------------------------
+
+export interface GalleryItem {
+  id: string;
+  slug: string;
+  title: string | null;
+  topic: string;
+  language: string;
+  category: string | null;
+  author_name: string | null;
+  views: number;
+  duration_ms: number | null;
+  has_media: boolean;
+  verdict: Verdict | null;
+  participants: Participant[];
+  published_at: string | null;
+}
+
+export interface GalleryResponse {
+  items: GalleryItem[];
+  total: number;
+  categories: string[];
 }
 
 // --- Server-Sent Events -----------------------------------------------------
@@ -152,11 +322,12 @@ export interface DebateTerminalEvent {
   totals?: DebateTotals;
 }
 
-// --- Media (audio + browser-side video) --------------------------------------
+export interface VerdictReadyEvent {
+  debate_id: string;
+  verdict: Verdict;
+}
 
-export type OutputStyle = 'markdown' | 'spoken';
-export type MediaStatus = 'none' | 'queued' | 'running' | 'ready' | 'error';
-export type TTSProviderName = 'elevenlabs' | 'edge';
+// --- Media (audio + browser-side video) --------------------------------------
 
 export interface MediaOptions {
   provider: TTSProviderName;
