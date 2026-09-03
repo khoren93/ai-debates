@@ -4,6 +4,7 @@ import json
 import logging
 import struct
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from app.core.config import settings
@@ -12,7 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class FfmpegError(RuntimeError):
-    pass
+    def __init__(self, message: str, returncode: int | None = None) -> None:
+        super().__init__(message)
+        # Exit status of the process; None when it never ran or timed out.
+        self.returncode = returncode
 
 
 def run(bin_name: str, args: list[str], *, timeout_s: int = 600) -> bytes:
@@ -29,7 +33,7 @@ def run(bin_name: str, args: list[str], *, timeout_s: int = 600) -> bytes:
         raise FfmpegError(f"{bin_name} timed out after {timeout_s}s") from e
     if proc.returncode != 0:
         tail = proc.stderr.decode(errors="replace")[-800:]
-        raise FfmpegError(f"{bin_name} exited with {proc.returncode}: {tail}")
+        raise FfmpegError(f"{bin_name} exited with {proc.returncode}: {tail}", proc.returncode)
     return proc.stdout
 
 
@@ -60,21 +64,65 @@ def probe_duration_ms(path: Path) -> int:
     return parse_ffprobe_duration_ms(out)
 
 
+_PCM_ARGS = ["-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le"]
+# Trailing-silence trim: reverse, strip leading silence, reverse back, so word timestamps
+# measured from the start of the clip stay valid.
+_TRIM_FILTERS = (
+    "areverse",
+    "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB:start_silence=0.15",
+    "areverse",
+)
+
+
+def _loudnorm_filter(lufs: float) -> str:
+    return f"loudnorm=I={lufs}:TP=-1.5:LRA=11"
+
+
+def _transcode(src: Path, dst: Path, audio_filter: str | None) -> None:
+    args = ["-i", str(src)]
+    if audio_filter:
+        args += ["-af", audio_filter]
+    ffmpeg([*args, *_PCM_ARGS, str(dst)])
+
+
+def _normalize_two_pass(src: Path, dst: Path, loudnorm: str) -> None:
+    trimmed = dst.with_name(f"{dst.stem}.trim.wav")
+    try:
+        _transcode(src, trimmed, ",".join(_TRIM_FILTERS))
+        _transcode(trimmed, dst, loudnorm)
+    finally:
+        trimmed.unlink(missing_ok=True)
+
+
 def normalize_turn(src: Path, dst: Path, *, target_lufs: float | None = None) -> None:
-    """Trim trailing silence (via areverse so word timestamps at the start stay valid),
-    normalize loudness and write 44.1 kHz mono 16-bit WAV."""
+    """Trim trailing silence, normalize loudness and write 44.1 kHz mono 16-bit WAV.
+
+    ffmpeg 7.1 (e.g. Debian trixie) sometimes aborts on the combined filter chain with
+    "Assertion best_input >= 0 failed at fftools/ffmpeg_filter.c" depending on the input;
+    ffmpeg 8 does not. When ffmpeg fails we retry with progressively simpler graphs rather
+    than failing the whole build over a single turn.
+    """
     lufs = settings.MEDIA_LOUDNESS_LUFS if target_lufs is None else target_lufs
-    filters = ",".join(
-        [
-            "areverse",
-            "silenceremove=start_periods=1:start_duration=0:start_threshold=-45dB:start_silence=0.15",
-            "areverse",
-            f"loudnorm=I={lufs}:TP=-1.5:LRA=11",
-        ]
-    )
-    ffmpeg(
-        ["-i", str(src), "-af", filters, "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le", str(dst)]
-    )
+    loudnorm = _loudnorm_filter(lufs)
+    attempts: list[tuple[str, Callable[[], None]]] = [
+        ("trim+loudnorm", lambda: _transcode(src, dst, ",".join([*_TRIM_FILTERS, loudnorm]))),
+        ("two-pass trim then loudnorm", lambda: _normalize_two_pass(src, dst, loudnorm)),
+        ("loudnorm only", lambda: _transcode(src, dst, loudnorm)),
+    ]
+    for i, (name, attempt) in enumerate(attempts):
+        try:
+            attempt()
+            return
+        except FfmpegError as e:
+            # Missing binary / timeout: retrying cannot help.
+            if e.returncode is None or i == len(attempts) - 1:
+                raise
+            logger.warning(
+                "ffmpeg %s failed for %s (%s); retrying with a simpler filter graph",
+                name,
+                src.name,
+                str(e).strip().splitlines()[-1][-200:],
+            )
 
 
 def envelope_from_pcm(pcm: bytes, *, rate: int, window_ms: int) -> list[float]:
