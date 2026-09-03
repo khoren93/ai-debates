@@ -24,6 +24,8 @@ MODELS: tuple[str, ...] = ("eleven_v3", "eleven_multilingual_v2", "eleven_flash_
 LANGUAGE_CODE_MODELS = frozenset({"eleven_flash_v2_5", "eleven_turbo_v2_5"})
 # Only v3 understands [audio tags]; for other models they are stripped.
 TAG_MODELS = frozenset({"eleven_v3"})
+# v3 rejects previous_text / next_text ("not yet supported with the 'eleven_v3' model").
+NO_CONTEXT_TEXT_MODELS = frozenset({"eleven_v3"})
 USD_PER_1K_CHARS: dict[str, float] = {
     "eleven_v3": 0.10,
     "eleven_multilingual_v2": 0.10,
@@ -131,10 +133,11 @@ class ElevenLabsProvider:
             "model_id": request.model_id,
             "apply_text_normalization": "auto",
         }
-        if request.previous_text:
-            body["previous_text"] = strip_audio_tags(request.previous_text)[-500:]
-        if request.next_text:
-            body["next_text"] = strip_audio_tags(request.next_text)[:500]
+        if request.model_id not in NO_CONTEXT_TEXT_MODELS:
+            if request.previous_text:
+                body["previous_text"] = strip_audio_tags(request.previous_text)[-500:]
+            if request.next_text:
+                body["next_text"] = strip_audio_tags(request.next_text)[:500]
         if request.model_id in LANGUAGE_CODE_MODELS:
             body["language_code"] = request.language_code
         if request.model_id == "eleven_v3":

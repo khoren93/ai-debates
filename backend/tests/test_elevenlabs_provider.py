@@ -43,6 +43,37 @@ def test_synthesize_with_timestamps() -> None:
     assert "with-timestamps" in seen[0].url.path
 
 
+def test_synthesize_context_text_only_for_supported_models() -> None:
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"audio_base64": base64.b64encode(b"x").decode(), "alignment": None}
+        )
+
+    provider = _provider(handler)
+    provider.synthesize(
+        SynthRequest(
+            "Hi", "v1", "eleven_v3", "en", previous_text="[warm] Before", next_text="After"
+        )
+    )
+    # ElevenLabs rejects previous_text / next_text for eleven_v3 with HTTP 400.
+    assert "previous_text" not in bodies[0] and "next_text" not in bodies[0]
+
+    provider.synthesize(
+        SynthRequest(
+            "Hi",
+            "v1",
+            "eleven_multilingual_v2",
+            "en",
+            previous_text="[warm] Before",
+            next_text="After",
+        )
+    )
+    assert bodies[1]["previous_text"] == "Before" and bodies[1]["next_text"] == "After"
+
+
 def test_synthesize_falls_back_to_forced_alignment() -> None:
     calls: list[str] = []
 
