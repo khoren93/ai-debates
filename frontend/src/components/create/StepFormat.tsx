@@ -61,7 +61,11 @@ export const StepFormat = ({ state, patch, billing, accountKeyMasked }: StepForm
             text="Studio-grade voices with emotion tags."
           />
         </div>
-        {!billing.elevenlabs_available && <Hint>Premium voices are not available on this server right now — the free Edge voices are used.</Hint>}
+        {!billing.elevenlabs_available && (
+          <Hint>
+            Premium voices are not available on this server right now{billing.elevenlabs_error ? ` (${billing.elevenlabs_error})` : ''} — the free Edge voices are used.
+          </Hint>
+        )}
       </Card>
 
       <Card padding="md">

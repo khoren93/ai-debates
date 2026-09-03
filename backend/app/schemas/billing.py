@@ -18,6 +18,7 @@ class BillingConfigOut(BaseModel):
     # ~1000 characters of speech last about a minute at a natural pace.
     tts_price_per_min: float
     elevenlabs_available: bool
+    elevenlabs_error: str | None = None
 
 
 class CheckoutRequest(BaseModel):

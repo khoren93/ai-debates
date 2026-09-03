@@ -42,8 +42,6 @@ class Settings(BaseSettings):
     MEDIA_JOB_TIMEOUT: int = 3600  # seconds for one audio build job
     # Comma-separated RQ queues a worker listens to ("default" = debate turns, "media" = TTS).
     RQ_QUEUES: str = "default,media"
-    # Media generations per client IP per day on the system ElevenLabs key. 0 disables.
-    MEDIA_CREATE_RATE_LIMIT: int = 5
     # Optional shared secret (header X-Media-Token) that bypasses the media rate limit.
     MEDIA_API_TOKEN: str | None = None
     ELEVENLABS_API_KEY: str | None = None

@@ -48,6 +48,7 @@ from app.services.media.paths import MediaPaths, public_url
 from app.services.media.script import clean_markdown
 from app.services.media.tts import PROVIDER_NAMES, SpeakerRef, TTSError, get_provider
 from app.services.media.tts.elevenlabs import MODELS as ELEVENLABS_MODELS
+from app.services.media.tts.elevenlabs import system_key_status
 from app.services.queue_manager import enqueue_media_build
 
 logger = logging.getLogger(__name__)
@@ -138,15 +139,15 @@ def _dt(value: Any) -> datetime | None:
 
 @router.get("/media/capabilities", response_model=MediaCapabilities)
 async def media_capabilities() -> MediaCapabilities:
-    has_key = bool(settings.ELEVENLABS_API_KEY)
+    ok, reason = await run_in_threadpool(system_key_status)
     return MediaCapabilities(
-        elevenlabs=has_key,
+        elevenlabs=ok,
         edge=True,
         ffmpeg=await run_in_threadpool(ffmpeg_available),
-        default_provider="elevenlabs" if has_key else "edge",
+        default_provider="elevenlabs" if ok else "edge",
         default_model_id=settings.TTS_DEFAULT_MODEL_ID,
         elevenlabs_models=list(ELEVENLABS_MODELS),
-        rate_limit_per_day=settings.MEDIA_CREATE_RATE_LIMIT,
+        elevenlabs_error=reason,
     )
 
 
@@ -178,6 +179,10 @@ async def media_voices(
             [{"role": "moderator"}] + [{"role": "debater"} for _ in range(participants)]
         )
     code = language_code(language)
+    if provider == "elevenlabs" and not x_tts_key:
+        ok, reason = await run_in_threadpool(system_key_status)
+        if not ok:
+            raise HTTPException(status_code=409, detail=f"Premium voices are unavailable: {reason}")
     tts = get_provider(provider, api_key=x_tts_key)
     if not tts.available():
         raise HTTPException(
@@ -250,8 +255,12 @@ async def generate_debate_media(
         raise HTTPException(status_code=400, detail="Unknown provider")
     own_tts_key = bool(body.user_tts_key)
     if body.provider == "elevenlabs":
-        if not (own_tts_key or settings.ELEVENLABS_API_KEY):
-            raise HTTPException(status_code=409, detail="ElevenLabs key is not configured")
+        if not own_tts_key:
+            ok, reason = await run_in_threadpool(system_key_status)
+            if not ok:
+                raise HTTPException(
+                    status_code=409, detail=f"Premium voices are unavailable: {reason}"
+                )
         # The system key is paid: charge the owner's credits (trusted callers are exempt).
         if not own_tts_key and not _is_trusted(request, x_media_token):
             if user is None:

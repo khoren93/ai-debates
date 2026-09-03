@@ -183,7 +183,11 @@ export const RegenerateAudioDialog = ({ open, onClose, debate, media, onQueued }
             <div>
               <Label hint={caps?.elevenlabs ? '(optional — otherwise billed to credits)' : '(required)'}>Your ElevenLabs key</Label>
               <Input type="password" value={ttsKey} onChange={(e) => setTtsKey(e.target.value.trim())} placeholder="xi-…" className="mt-1.5 font-mono" />
-              {keyMissing && <Hint tone="danger">No premium key is configured on this server. Enter your own key or switch to the free Edge voices.</Hint>}
+              {keyMissing && (
+                <Hint tone="danger">
+                  {caps?.elevenlabs_error ? `Premium voices are unavailable on this server: ${caps.elevenlabs_error}.` : 'No premium key is configured on this server.'} Enter your own key or switch to the free Edge voices.
+                </Hint>
+              )}
             </div>
           )}
           {voicesError && <ErrorBox>{voicesError}</ErrorBox>}

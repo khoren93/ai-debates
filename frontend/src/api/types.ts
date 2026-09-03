@@ -238,6 +238,8 @@ export interface BillingConfig {
   tts_price_per_1k_chars: number;
   tts_price_per_min: number;
   elevenlabs_available: boolean;
+  /** Why premium voices are unavailable (key missing or rejected). */
+  elevenlabs_error: string | null;
 }
 
 export interface CheckoutResponse {
@@ -396,5 +398,6 @@ export interface MediaCapabilities {
   default_provider: TTSProviderName;
   default_model_id: string;
   elevenlabs_models: string[];
-  rate_limit_per_day: number;
+  /** Why premium voices are unavailable (key missing or rejected). */
+  elevenlabs_error: string | null;
 }

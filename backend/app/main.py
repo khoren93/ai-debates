@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqladmin import Admin
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.auth import authentication_backend
@@ -33,6 +34,7 @@ from app.core.db import engine
 from app.core.logging import setup_logging
 from app.core.media_static import MediaStaticFiles
 from app.core.redis import close_async_redis, get_async_redis
+from app.services.media.tts.elevenlabs import system_key_status
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -51,6 +53,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.warning("OPENROUTER_API_KEY is not set; only user-supplied keys will work")
     if not settings.ELEVENLABS_API_KEY:
         logger.info("ELEVENLABS_API_KEY is not set; media builds use the free Edge voices")
+    else:
+        ok, reason = await run_in_threadpool(system_key_status)
+        if not ok:
+            logger.warning("ELEVENLABS_API_KEY was rejected (%s); premium voices are off", reason)
     settings.media_root_path.mkdir(parents=True, exist_ok=True)
     yield
     await close_async_redis()

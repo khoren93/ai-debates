@@ -127,8 +127,11 @@ Stopping: `POST /api/debates/{id}/stop` sets the status, sets `debate:{id}:stop`
 6. `POST /api/debates/{id}/media` (finished debates only) stores the chosen TTS options in
    `debates.media_json`, sets `media_status=queued` and enqueues `build_media_job` on the
    `media` RQ queue (`MEDIA_JOB_TIMEOUT`). An optional user ElevenLabs key goes to Redis
-   (`debate:{id}:tts_key`), never to Postgres. ElevenLabs builds on the system key are
-   rate-limited per IP per day (`MEDIA_CREATE_RATE_LIMIT`; admin session or `X-Media-Token` bypass).
+   (`debate:{id}:tts_key`), never to Postgres. ElevenLabs builds on the system key are paid
+   from the owner's credits (admin session or `X-Media-Token` are exempt). The system key is
+   probed (`tts/elevenlabs.system_key_status`, cached) so a rejected key disables premium
+   voices in the UI instead of failing later; the key needs the Text to Speech, Voices read,
+   User read and Forced alignment permissions.
 7. The job cleans each turn's Markdown (`media/script.py`), synthesizes it with the provider
    (`elevenlabs` with word timestamps / forced-alignment fallback, or the free `edge` voices),
    normalizes loudness with ffmpeg, caches per-turn WAV+JSON by content hash under

@@ -34,6 +34,7 @@ from app.schemas.billing import (
     UsageOut,
 )
 from app.services.credits import apply_transaction
+from app.services.media.tts.elevenlabs import system_key_status
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,6 +65,7 @@ def transaction_out(tx: CreditTransaction) -> TransactionOut:
 
 @router.get("/config", response_model=BillingConfigOut)
 async def billing_config() -> BillingConfigOut:
+    elevenlabs_ok, elevenlabs_reason = await run_in_threadpool(system_key_status)
     return BillingConfigOut(
         topup_amounts=settings.topup_amounts,
         currency=settings.STRIPE_CURRENCY,
@@ -72,7 +74,8 @@ async def billing_config() -> BillingConfigOut:
         credit_markup=settings.CREDIT_MARKUP,
         tts_price_per_1k_chars=settings.TTS_CREDIT_PRICE_PER_1K_CHARS,
         tts_price_per_min=round(settings.TTS_CREDIT_PRICE_PER_1K_CHARS, 4),
-        elevenlabs_available=bool(settings.ELEVENLABS_API_KEY),
+        elevenlabs_available=elevenlabs_ok,
+        elevenlabs_error=elevenlabs_reason,
     )
 
 

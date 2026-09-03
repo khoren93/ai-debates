@@ -22,6 +22,7 @@ from app.models.models import Debate, Turn, utcnow
 from app.services import queue_manager
 from app.services.credits import charge_debate_sync
 from app.services.events import publish_event
+from app.services.media.tts.elevenlabs import system_key_status
 from app.services.openrouter_client import OpenRouterClient, OpenRouterError
 from app.services.prompt_builder import (
     build_debater_messages,
@@ -265,7 +266,8 @@ def _auto_media(db: Session, debate: Debate) -> None:
         return
     provider = str(plan.get("provider") or "edge")
     voices: dict[str, str] = dict(plan.get("voices") or {})
-    if provider == "elevenlabs" and not settings.ELEVENLABS_API_KEY:
+    if provider == "elevenlabs" and not system_key_status()[0]:
+        logger.warning("Premium voices unavailable for %s, falling back to Edge", debate.id)
         provider, voices = "edge", {}  # voice ids are provider-specific
     state = dict(debate.media_json or {})
     state.update(

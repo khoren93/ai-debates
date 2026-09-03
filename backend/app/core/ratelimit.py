@@ -65,14 +65,3 @@ async def enforce_login_limit(request: Request) -> None:
         window_seconds=WINDOW_SECONDS,
         what="sign-in attempts",
     )
-
-
-async def enforce_media_create_limit(request: Request) -> None:
-    """Cap media (TTS) builds on the system key per client IP per day."""
-    await enforce_limit(
-        request,
-        bucket="create_media",
-        limit=settings.MEDIA_CREATE_RATE_LIMIT,
-        window_seconds=86400,
-        what="media generations",
-    )

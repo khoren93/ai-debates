@@ -90,9 +90,7 @@ class ElevenLabsProvider:
         with self._client() as client:
             response = self._request(client, "GET", f"{self.base_url}/v1/voices")
         if response.status_code != 200:
-            raise TTSError(
-                f"ElevenLabs voices request failed ({response.status_code})", response.status_code
-            )
+            raise TTSError(_error_message(response), response.status_code)
         voices: list[VoiceInfo] = []
         for v in response.json().get("voices") or []:
             labels = v.get("labels") or {}
@@ -251,6 +249,43 @@ def pick_default_voices(voices: list[VoiceInfo], speakers: list[SpeakerRef]) -> 
         used.add(chosen)
         out[speaker.id] = chosen
     return out
+
+
+# --- system key probe ------------------------------------------------------
+
+_PROBE_OK_TTL = 600.0
+_PROBE_FAIL_TTL = 60.0
+_probe_cache: tuple[float, bool, str | None] | None = None
+
+
+def system_key_status(*, force: bool = False) -> tuple[bool, str | None]:
+    """Whether the system ElevenLabs key actually works: (ok, reason).
+
+    Restricted keys are accepted by the API only for the permissions they were created with,
+    so the key is probed with the voice list (needs `voices_read`). Cached per process.
+    """
+    global _probe_cache
+    if not settings.ELEVENLABS_API_KEY:
+        return False, "No ElevenLabs key is configured on this server"
+    now = time.monotonic()
+    if not force and _probe_cache is not None:
+        stamp, ok, reason = _probe_cache
+        if now - stamp < (_PROBE_OK_TTL if ok else _PROBE_FAIL_TTL):
+            return ok, reason
+    provider = ElevenLabsProvider()
+    try:
+        with provider._client() as client:
+            response = provider._request(
+                client, "GET", f"{provider.base_url}/v1/voices", attempts=1
+            )
+        ok = response.status_code == 200
+        reason = None if ok else _error_message(response)
+    except TTSError as e:
+        ok, reason = False, str(e)
+    if not ok:
+        logger.warning("System ElevenLabs key rejected: %s", reason)
+    _probe_cache = (now, ok, reason)
+    return ok, reason
 
 
 def estimate_usd(model_id: str, chars: int) -> float | None:

@@ -83,4 +83,5 @@ class MediaCapabilities(BaseModel):
     default_provider: TTSProviderName
     default_model_id: str
     elevenlabs_models: list[str]
-    rate_limit_per_day: int
+    # Why premium voices are unavailable (key missing or rejected), for the UI.
+    elevenlabs_error: str | None = None

@@ -20,7 +20,7 @@ interface Props {
   mediaBase: string;
   highlightIndex: number;
   onHighlightChange?: (index: number) => void;
-  /** 1 = full resolution, 0.6667 = 720p from 1080p, 0.5 = draft. */
+  /** 2 = 4K (2160p from 1080p), 1 = full resolution, 0.6667 = 720p, 0.5 = draft. */
   defaultScale: number;
   /** Owners report finished renders for the usage stats. */
   reportRenders: boolean;
@@ -166,6 +166,7 @@ export const ExportCard = ({ kind, debateId, timeline, mediaBase, highlightIndex
         <div className="mt-3 flex items-center gap-2">
           <span className="text-xs text-text-3">Quality</span>
           <Select value={scale} onChange={(e) => setScale(Number(e.target.value))} disabled={busy} className="!w-auto !bg-surface !py-1.5 text-xs">
+            <option value={2}>{height * 2}p · 4K, slow</option>
             <option value={1}>{height}p</option>
             <option value={0.6667}>{Math.round(height * 0.6667)}p · faster</option>
             <option value={0.5}>{Math.round(height * 0.5)}p · draft</option>

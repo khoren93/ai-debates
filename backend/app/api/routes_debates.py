@@ -42,6 +42,7 @@ from app.schemas.schemas import (
 )
 from app.services.estimate import Pricing, estimate_debate, pricing_from_models
 from app.services.media.paths import MediaPaths
+from app.services.media.tts.elevenlabs import system_key_status
 from app.services.openrouter_client import openrouter_client
 from app.services.queue_manager import enqueue_debate_start
 from app.services.views import count_view
@@ -87,12 +88,14 @@ def _resolve_provider_key(user: User | None, request_key: str | None) -> tuple[s
     return None, False
 
 
-def _effective_tts_provider(config: DebateConfig) -> str | None:
+async def _effective_tts_provider(config: DebateConfig) -> str | None:
     plan = config.media_plan
     if plan is None or "audio" not in plan.outputs:
         return None
-    if plan.provider == "elevenlabs" and not settings.ELEVENLABS_API_KEY:
-        return "edge"
+    if plan.provider == "elevenlabs":
+        ok, _reason = await run_in_threadpool(system_key_status)
+        if not ok:
+            return "edge"
     return plan.provider
 
 
@@ -111,7 +114,7 @@ async def _estimate(config: DebateConfig, user: User | None, own_key: bool) -> E
         config.persisted(),
         pricing,
         own_key=own_key,
-        tts_provider=_effective_tts_provider(config),
+        tts_provider=await _effective_tts_provider(config),
         tts_price_per_1k=settings.TTS_CREDIT_PRICE_PER_1K_CHARS,
         markup=settings.CREDIT_MARKUP,
         default_model=settings.DEFAULT_MODEL_ID,
